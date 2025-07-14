@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.9] - 2025-07-14
+
+### Changed
+
+- When no calibration peptides are present, just fit a model that returns the original predicted value
+
 ## [3.1.8] - 2025-02-21
 
 ### Changed
