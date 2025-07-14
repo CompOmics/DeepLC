@@ -229,7 +229,7 @@ class DeepLC:
         #                                              #
         #                                              #
         ################################################
-        
+
         self.n_jobs = 1
 
         if self.n_jobs == None:
@@ -849,39 +849,55 @@ class DeepLC:
         # predicted_tr = list(predicted_tr)
         # measured_tr = list(measured_tr)
 
-        # Fit a SplineTransformer model
-        if self.deeplc_retrain:
-            spline = SplineTransformer(degree=2, n_knots=10)
-            linear_model = LinearRegression()
-            linear_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
+        try:
+            # Fit a SplineTransformer model
+            if self.deeplc_retrain:
+                spline = SplineTransformer(degree=2, n_knots=10)
+                linear_model = LinearRegression()
+                linear_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
 
-            linear_model_left = linear_model
-            spline_model = linear_model
-            linear_model_right = linear_model
-        else:
-            spline = SplineTransformer(
-                degree=4, n_knots=int(len(measured_tr) / 500) + 5
+                linear_model_left = linear_model
+                spline_model = linear_model
+                linear_model_right = linear_model
+            else:
+                spline = SplineTransformer(
+                    degree=4, n_knots=int(len(measured_tr) / 500) + 5
+                )
+                spline_model = make_pipeline(spline, LinearRegression())
+                spline_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
+
+                # Determine the top 10% of data on either end
+                n_top = int(len(predicted_tr) * 0.1)
+
+                # Fit a linear model on the bottom 10% (left-side extrapolation)
+                X_left = predicted_tr[:n_top]
+                y_left = measured_tr[:n_top]
+                linear_model_left = LinearRegression()
+                linear_model_left.fit(X_left.reshape(-1, 1), y_left)
+
+                # Fit a linear model on the top 10% (right-side extrapolation)
+                X_right = predicted_tr[-n_top:]
+                y_right = measured_tr[-n_top:]
+                linear_model_right = LinearRegression()
+                linear_model_right.fit(X_right.reshape(-1, 1), y_right)
+            calibrate_min = min(predicted_tr)
+            calibrate_max = max(predicted_tr)
+        except Exception as e:
+            logger.warning(
+                "Error fitting calibration models: %s. Will return non-calibrated values.",
+                e,
             )
-            spline_model = make_pipeline(spline, LinearRegression())
-            spline_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
-
-            # Determine the top 10% of data on either end
-            n_top = int(len(predicted_tr) * 0.1)
-
-            # Fit a linear model on the bottom 10% (left-side extrapolation)
-            X_left = predicted_tr[:n_top]
-            y_left = measured_tr[:n_top]
-            linear_model_left = LinearRegression()
-            linear_model_left.fit(X_left.reshape(-1, 1), y_left)
-
-            # Fit a linear model on the top 10% (right-side extrapolation)
-            X_right = predicted_tr[-n_top:]
-            y_right = measured_tr[-n_top:]
+            X = np.array([0, 1, 2, 3, 4, 5]).reshape(-1, 1)
+            y = X.copy()
+            spline_model = LinearRegression()
+            spline_model.fit(X, y)
             linear_model_right = LinearRegression()
-            linear_model_right.fit(X_right.reshape(-1, 1), y_right)
+            linear_model_right.fit(X, y)
+            linear_model_left = LinearRegression()
+            linear_model_left.fit(X, y)
 
-        calibrate_min = min(predicted_tr)
-        calibrate_max = max(predicted_tr)
+            calibrate_min = 0.0
+            calibrate_max = 10.0
 
         return (
             calibrate_min,
