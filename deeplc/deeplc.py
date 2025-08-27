@@ -1287,7 +1287,7 @@ class DeepLC:
         for m_name in pred_dict.keys():
             preds = [sum(a) / len(a) for a in zip(*list(pred_dict[m_name].values()))]
             if len(measured_tr) == 0:
-                perf = sum(abs(seq_df["tr"] - preds))
+                perf = sum(abs(np.array(seq_df["tr"]) - np.array(preds)))
             else:
                 perf = sum(abs(np.array(measured_tr) - np.array(preds)))
 
@@ -1297,13 +1297,31 @@ class DeepLC:
                     % (m_name, perf / len(preds))
                 )
 
-            if perf < best_perf:
-                if self.deepcallc_mod:
-                    m_group_name = "deepcallc"
-                else:
-                    m_group_name = m_name
-                    # TODO is deepcopy really required?
+            try:
+                if perf < best_perf:
+                    if self.deepcallc_mod:
+                        m_group_name = "deepcallc"
+                    else:
+                        m_group_name = m_name
 
+                    # TODO is a deepcopy really required?
+                    best_calibrate_dict = copy.deepcopy(
+                        mod_calibrate_dict[m_group_name]
+                    )
+                    best_calibrate_min = copy.deepcopy(
+                        mod_calibrate_min_dict[m_group_name]
+                    )
+                    best_calibrate_max = copy.deepcopy(
+                        mod_calibrate_max_dict[m_group_name]
+                    )
+
+                    best_model = copy.deepcopy(mod_dict[m_group_name])
+                    best_perf = perf
+
+                    temp_obs = np.array(measured_tr)
+                    temp_pred = np.array(preds)
+            except:
+                # Catch-all to just set the best model to the last one it encountered
                 best_calibrate_dict = copy.deepcopy(mod_calibrate_dict[m_group_name])
                 best_calibrate_min = copy.deepcopy(mod_calibrate_min_dict[m_group_name])
                 best_calibrate_max = copy.deepcopy(mod_calibrate_max_dict[m_group_name])
