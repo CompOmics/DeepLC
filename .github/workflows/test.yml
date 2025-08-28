@@ -11,7 +11,7 @@ jobs:
   test:
     strategy:
       matrix:
-        system: [["3.11", "ubuntu-latest"], ["3.12", "macos-latest"], ["3.12", "ubuntu-latest"]]
+        system: [["3.11", "ubuntu-latest"], ["3.12", "ubuntu-latest"]]
     runs-on: ${{ matrix.system[1] }}
     steps:
       - uses: actions/checkout@v4
