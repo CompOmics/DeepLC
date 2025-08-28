@@ -9,7 +9,7 @@ on:
       ref:
         description: 'Git ref (branch, tag, or SHA) to build from'
         required: true
-        default: 'main'
+        default: 'master'   # ← was 'main'
         type: string
 
 # Least-privilege defaults for all jobs (override per-job if needed)
