@@ -1,4 +1,9 @@
-"""Retention time calibration."""
+"""
+Retention time calibration utilities.
+
+This module provides calibration strategies to map source retention times to
+an aligned target scale.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +11,9 @@ import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import SplineTransformer
+from sklearn.linear_model import LinearRegression  # type: ignore[import]
+from sklearn.pipeline import Pipeline, make_pipeline  # type: ignore[import]
+from sklearn.preprocessing import SplineTransformer  # type: ignore[import]
 
 from deeplc._exceptions import CalibrationError
 
@@ -23,346 +28,268 @@ class Calibration(ABC):
         super().__init__()
 
     @abstractmethod
-    def fit(measured_tr: np.ndarray, predicted_tr: np.ndarray) -> None: ...
+    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
+        """Fit the calibration from source to target."""
 
     @abstractmethod
-    def transform(tr: np.ndarray) -> np.ndarray: ...
-    
+    def transform(self, source_rt: np.ndarray) -> np.ndarray:
+        """Transform source retention times into the calibrated target space."""
+
 
 class IdentityCalibration(Calibration):
-    """No calibration, just returns the predicted retention times."""
+    """No calibration; returns inputs unchanged."""
 
-    def fit(self, measured_tr: np.ndarray, predicted_tr: np.ndarray) -> None:
-        """No fitting required for NoCalibration."""
-        pass
+    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:  # noqa: ARG002
+        return None
 
-    def transform(self, tr: np.ndarray) -> np.ndarray:
-        """
-        Transform the predicted retention times without any calibration.
-
-        Parameters
-        ----------
-        tr
-            Retention times to be transformed.
-
-        Returns
-        -------
-        np.ndarray
-            Transformed retention times (same as input).
-        """
-        return tr
+    def transform(self, source_rt: np.ndarray) -> np.ndarray:
+        return source_rt
 
 
 class PiecewiseLinearCalibration(Calibration):
     def __init__(
         self,
-        split_cal: int = 50,
-        bin_distance: float = 2.0,
-        dict_cal_divider: int = 50,
+        number_of_splits: int = 50,
+        extrapolate: bool = True,
         use_median: bool = True,
-    ):
+    ) -> None:
         """
-        Piece-wise linear calibration for retention time.
-
+        Piece-wise linear calibration based on per-split anchors.
+        
         Parameters
         ----------
-        split_cal
-            Number of splits.
-        bin_distance
-            Distance between bins.
-        dict_cal_divider
-            # TODO: Make more descriptive
-            Divider for the dictionary used in the piece-wise linear model.
-        use_median
-            # TODO: Make more descriptive
-            If True, use median instead of mean for calibration.
-
+        number_of_splits : int
+            Number of segments to split the source retention time range into.
+            More segments allow more flexibility but may lead to overfitting.
+        extrapolate : bool
+            If True, allows extrapolation outside the fitted source retention time range.
+            If False, clips input values to the fitted range.
+        use_median : bool
+            If True, uses the median of each segment to define anchors. If False, uses the mean.
         """
         super().__init__()
-        self.split_cal = split_cal
-        self.bin_distance = bin_distance
-        self.dict_cal_divider = dict_cal_divider
-        self.use_median = use_median
+        self.number_of_splits = int(number_of_splits)
+        self.extrapolate = bool(extrapolate)
+        self.use_median = bool(use_median)
 
-        self._calibrate_min = None
-        self._calibrate_max = None
-        self._calibrate_dict = None
-        self._fit = False
+        self._calibrate_min: float | None = None
+        self._calibrate_max: float | None = None
+        self._source_breakpoints: np.ndarray | None = None
+        self._slopes: np.ndarray | None = None
+        self._intercepts: np.ndarray | None = None
 
-    def fit(self, measured_tr: np.ndarray, predicted_tr: np.ndarray) -> None:
-        """
-        Fit a piece-wise linear model to the measured and predicted retention times.
+    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
+        """Fit a piece-wise linear model mapping source to target retention times."""
+        target_rt, source_rt = _prepare_series(target_rt, source_rt)
 
-        Parameters
-        ----------
-        measured_tr
-            Measured retention times.
-        predicted_tr
-            Predicted retention times.
+        cal_min = float(source_rt[0])
+        cal_max = float(source_rt[-1])
+        if (not np.isfinite(cal_min)) or (not np.isfinite(cal_max)) or (cal_max <= cal_min):
+            raise CalibrationError(
+                "Source retention times have zero or invalid range; cannot calibrate."
+            )
 
-        """
-        measured_tr, predicted_tr = _process_arrays(measured_tr, predicted_tr)
+        boundaries = np.linspace(cal_min, cal_max, self.number_of_splits + 1, dtype=np.float32)
+        starts = np.searchsorted(source_rt, boundaries[:-1], side="left")
+        ends = np.searchsorted(source_rt, boundaries[1:], side="left")
 
-        mtr_mean = []
-        ptr_mean = []
+        tgt_anchors: list[float] = []
+        src_anchors: list[float] = []
+        for s, e in zip(starts, ends, strict=True):
+            if e <= s:
+                continue
+            t_seg = target_rt[s:e]
+            s_seg = source_rt[s:e]
+            if self.use_median:
+                tgt_anchors.append(float(np.median(t_seg)))
+                src_anchors.append(float(np.median(s_seg)))
+            else:
+                tgt_anchors.append(float(np.mean(t_seg)))
+                src_anchors.append(float(np.mean(s_seg)))
 
-        calibrate_dict = {}
-        calibrate_min = float("inf")
-        calibrate_max = 0
+        if len(src_anchors) < 2:
+            raise CalibrationError(
+                "Not enough anchor points to build a piecewise calibration (need >= 2)."
+            )
+
+        src_arr = np.asarray(src_anchors, dtype=np.float32)
+        tgt_arr = np.asarray(tgt_anchors, dtype=np.float32)
+        keep = np.concatenate(([True], src_arr[1:] > src_arr[:-1]))
+        src_arr = src_arr[keep]
+        tgt_arr = tgt_arr[keep]
+        if src_arr.size < 2:
+            raise CalibrationError(
+                "After removing degenerate anchors, not enough points remain to define segments."
+            )
+
+        delta_src = src_arr[1:] - src_arr[:-1]
+        delta_tgt = tgt_arr[1:] - tgt_arr[:-1]
+        slopes = delta_tgt / delta_src
+        intercepts = (-src_arr[:-1] * slopes) + tgt_arr[:-1]
+
+        self._source_breakpoints = src_arr.astype(np.float32)
+        self._slopes = slopes.astype(np.float32)
+        self._intercepts = intercepts.astype(np.float32)
+        self._calibrate_min = cal_min
+        self._calibrate_max = cal_max
 
         LOGGER.debug(
-            "Selecting the data points for calibration (used to fit the linear models between)"
+            "Piecewise fit: anchors=%d, segments=%d, range=[%.3f, %.3f]",
+            len(self._source_breakpoints),
+            len(self._slopes),
+            self._calibrate_min,
+            self._calibrate_max,
         )
-        # smooth between observed and predicted
-        split_val = predicted_tr[-1] / self.split_cal
 
-        for range_calib_number in np.arange(0.0, predicted_tr[-1], split_val):
-            ptr_index_start = np.argmax(predicted_tr >= range_calib_number)
-            ptr_index_end = np.argmax(predicted_tr >= range_calib_number + split_val)
+    def transform(self, source_rt: np.ndarray) -> np.ndarray:
+        """Transform source retention times using the fitted piece-wise linear model."""
+        if (
+            self._calibrate_min is None
+            or self._calibrate_max is None
+            or self._source_breakpoints is None
+            or self._slopes is None
+            or self._intercepts is None
+        ):
+            raise CalibrationError("The model has not been fitted yet. Call fit() first.")
 
-            # no points so no cigar... use previous points
-            if ptr_index_start >= ptr_index_end:
-                LOGGER.debug(
-                    "Skipping calibration step, due to no points in the "
-                    "predicted range (are you sure about the split size?): "
-                    "%s,%s",
-                    range_calib_number,
-                    range_calib_number + split_val,
-                )
-                continue
-
-            mtr = measured_tr[ptr_index_start:ptr_index_end]
-            ptr = predicted_tr[ptr_index_start:ptr_index_end]
-
-            if self.use_median:
-                mtr_mean.append(np.median(mtr))
-                ptr_mean.append(np.median(ptr))
-            else:
-                mtr_mean.append(sum(mtr) / len(mtr))
-                ptr_mean.append(sum(ptr) / len(ptr))
-
-        LOGGER.debug("Fitting the linear models between the points")
-
-        if self.split_cal >= len(measured_tr):
-            raise CalibrationError(
-                f"Not enough measured tr ({len(measured_tr)}) for the chosen number of splits "
-                f"({self.split_cal}). Choose a smaller split_cal parameter or provide more "
-                "peptides for fitting the calibration curve."
-            )
-        if len(mtr_mean) == 0:
-            raise CalibrationError("The measured tr list is empty, not able to calibrate")
-        if len(ptr_mean) == 0:
-            raise CalibrationError("The predicted tr list is empty, not able to calibrate")
-
-        # calculate calibration curves
-        for i in range(0, len(ptr_mean)):
-            if i >= len(ptr_mean) - 1:
-                continue
-            delta_ptr = ptr_mean[i + 1] - ptr_mean[i]
-            delta_mtr = mtr_mean[i + 1] - mtr_mean[i]
-
-            slope = delta_mtr / delta_ptr
-            intercept = (-1 * (ptr_mean[i] * slope)) + mtr_mean[i]
-
-            # optimized predictions using a dict to find calibration curve very fast
-            for v in np.arange(
-                round(ptr_mean[i], self.bin_distance),
-                round(ptr_mean[i + 1], self.bin_distance),
-                1 / ((self.bin_distance) * self.dict_cal_divider),
-            ):
-                if v < calibrate_min:
-                    calibrate_min = v
-                if v > calibrate_max:
-                    calibrate_max = v
-                calibrate_dict[str(round(v, self.bin_distance))] = (slope, intercept)
-
-        self._calibrate_min = calibrate_min
-        self._calibrate_max = calibrate_max
-        self._calibrate_dict = calibrate_dict
-
-        self._fit = True
-
-    def transform(self, tr: np.ndarray) -> np.ndarray:
-        """
-        Transform the predicted retention times using the fitted piece-wise linear model.
-
-        Parameters
-        ----------
-        tr
-            Retention times to be transformed.
-
-        Returns
-        -------
-        np.ndarray
-            Transformed retention times.
-        """
-        if not self._fit:
-            raise CalibrationError(
-                "The model has not been fitted yet. Please call fit() before transform()."
-            )
-
-        if tr.shape[0] == 0:
+        if source_rt.shape[0] == 0:
             return np.array([])
 
-        # TODO: Can this be vectorized?
-        cal_preds = []
-        for uncal_pred in tr:
-            try:
-                slope, intercept = self.cal_dict[str(round(uncal_pred, self.bin_distance))]
-                cal_preds.append(slope * (uncal_pred) + intercept)
-            except KeyError:
-                # outside of the prediction range ... use the last
-                # calibration curve
-                if uncal_pred <= self.cal_min:
-                    slope, intercept = self.cal_dict[str(round(self.cal_min, self.bin_distance))]
-                    cal_preds.append(slope * (uncal_pred) + intercept)
-                elif uncal_pred >= self.cal_max:
-                    slope, intercept = self.cal_dict[str(round(self.cal_max, self.bin_distance))]
-                    cal_preds.append(slope * (uncal_pred) + intercept)
-                else:
-                    slope, intercept = self.cal_dict[str(round(self.cal_max, self.bin_distance))]
-                    cal_preds.append(slope * (uncal_pred) + intercept)
+        x = source_rt.astype(np.float32, copy=False)
+        x_eval = (
+            np.clip(x, self._calibrate_min, self._calibrate_max) if not self.extrapolate else x
+        )
 
-        return np.array(cal_preds)
+        idx = np.searchsorted(self._source_breakpoints, x_eval, side="right") - 1
+        idx = np.clip(idx, 0, len(self._source_breakpoints) - 2)
+        y = self._slopes[idx] * x_eval + self._intercepts[idx]
+        return y
+
+    def get_calibration_curve(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the calibration anchors as two arrays (x, y)."""
+        if (
+            self._source_breakpoints is None
+            or self._slopes is None
+            or self._intercepts is None
+        ):
+            raise CalibrationError("The model has not been fitted yet. Call fit() first.")
+
+        x = self._source_breakpoints.astype(np.float64)
+        y = np.empty_like(x, dtype=np.float64)
+        y[0] = float(self._slopes[0] * x[0] + self._intercepts[0])
+        if len(x) > 1:
+            prev_idx = np.arange(0, len(x) - 1)
+            y[1:] = (self._slopes[prev_idx] * x[1:] + self._intercepts[prev_idx]).astype(
+                np.float64
+            )
+        return x, y
+
+    @property
+    def calibrate_min(self) -> float | None:
+        return self._calibrate_min
+
+    @property
+    def calibrate_max(self) -> float | None:
+        return self._calibrate_max
 
 
 class SplineTransformerCalibration(Calibration):
-    def __init__(self):
-        """SplineTransformer calibration for retention time."""
+    def __init__(self) -> None:
         super().__init__()
-        self._calibrate_min = None
-        self._calibrate_max = None
-        self._linear_model_left = None
-        self._spline_model = None
-        self._linear_model_right = None
-
-        self._fit = False
+        self._calibrate_min: float | None = None
+        self._calibrate_max: float | None = None
+        self._model_left: LinearRegression | None = None
+        self._model_main: Pipeline | LinearRegression | None = None
+        self._model_right: LinearRegression | None = None
 
     def fit(
         self,
-        measured_tr: np.ndarray,
-        predicted_tr: np.ndarray,
-        simplified: bool = False,  # TODO: Move to __init__?
+        target_rt: np.ndarray,
+        source_rt: np.ndarray,
+        simplified: bool = False,
     ) -> None:
-        """
-        Fit the SplineTransformer model to the measured and predicted retention times.
+        """Fit a spline-based model mapping source to target retention times."""
+        target_rt, source_rt = _prepare_series(target_rt, source_rt)
 
-        Parameters
-        ----------
-        measured_tr
-            Measured retention times.
-        predicted_tr
-            Predicted retention times.
-        simplified
-            If True, use a simplified model with fewer knots and a linear model.
-            If False, use a more complex model with more knots and a spline model.
-
-        """
-        measured_tr, predicted_tr = _process_arrays(measured_tr, predicted_tr)
-
-        # Fit a SplineTransformer model
         if simplified:
-            spline = SplineTransformer(degree=2, n_knots=10)
             linear_model = LinearRegression()
-            linear_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
-
+            linear_model.fit(source_rt.reshape(-1, 1), target_rt)
             linear_model_left = linear_model
-            # TODO @RobbinBouwmeester: Should this be the spline model?
             spline_model = linear_model
             linear_model_right = linear_model
         else:
-            spline = SplineTransformer(degree=4, n_knots=int(len(measured_tr) / 500) + 5)
+            spline = SplineTransformer(degree=4, n_knots=int(len(source_rt) / 500) + 5)
             spline_model = make_pipeline(spline, LinearRegression())
-            spline_model.fit(predicted_tr.reshape(-1, 1), measured_tr)
+            spline_model.fit(source_rt.reshape(-1, 1), target_rt)
 
-            # Determine the top 10% of data on either end
-            n_top = int(len(predicted_tr) * 0.1)
-
-            # Fit a linear model on the bottom 10% (left-side extrapolation)
-            X_left = predicted_tr[:n_top]
-            y_left = measured_tr[:n_top]
+            n_top = int(len(source_rt) * 0.1)
+            X_left = source_rt[:n_top]
+            y_left = target_rt[:n_top]
             linear_model_left = LinearRegression()
             linear_model_left.fit(X_left.reshape(-1, 1), y_left)
 
-            # Fit a linear model on the top 10% (right-side extrapolation)
-            X_right = predicted_tr[-n_top:]
-            y_right = measured_tr[-n_top:]
+            X_right = source_rt[-n_top:]
+            y_right = target_rt[-n_top:]
             linear_model_right = LinearRegression()
             linear_model_right.fit(X_right.reshape(-1, 1), y_right)
 
-        self._calibrate_min = min(predicted_tr)
-        self._calibrate_max = max(predicted_tr)
-        self._linear_model_left = linear_model_left
-        self._spline_model = spline_model
-        self._linear_model_right = linear_model_right
+        self._calibrate_min = float(np.min(source_rt))
+        self._calibrate_max = float(np.max(source_rt))
+        self._model_left = linear_model_left
+        self._model_main = spline_model
+        self._model_right = linear_model_right
 
-        self._fit = True
+    def transform(self, source_rt: np.ndarray) -> np.ndarray:
+        """Transform source retention times using the fitted spline model."""
+        if (
+            self._calibrate_min is None
+            or self._calibrate_max is None
+            or self._model_main is None
+            or self._model_left is None
+            or self._model_right is None
+        ):
+            raise CalibrationError("The model has not been fitted yet. Call fit() first.")
+        assert self._model_main is not None
+        assert self._model_left is not None
+        assert self._model_right is not None
 
-    def transform(self, tr: np.ndarray) -> np.ndarray:
-        """
-        Transform the predicted retention times using the fitted SplineTransformer model.
-
-        Parameters
-        ----------
-        tr
-            Retention times to be transformed.
-
-        Returns
-        -------
-        np.ndarray
-            Transformed retention times.
-        """
-        if not self._fit:
-            raise CalibrationError(
-                "The model has not been fitted yet. Please call fit() before transform()."
-            )
-
-        if tr.shape[0] == 0:
+        if source_rt.shape[0] == 0:
             return np.array([])
 
-        y_pred_spline = self._spline_model.predict(tr.reshape(-1, 1))
-        y_pred_left = self._linear_model_left.predict(tr.reshape(-1, 1))
-        y_pred_right = self._linear_model_right.predict(tr.reshape(-1, 1))
+        y_pred_spline = self._model_main.predict(source_rt.reshape(-1, 1))
+        y_pred_left = self._model_left.predict(source_rt.reshape(-1, 1))
+        y_pred_right = self._model_right.predict(source_rt.reshape(-1, 1))
 
-        # Use spline model within the range of X
-        within_range = (tr >= self.cal_min) & (tr <= self.cal_max)
-        within_range = within_range.ravel()  # Ensure this is a 1D array for proper indexing
+        within_range = (source_rt >= self._calibrate_min) & (source_rt <= self._calibrate_max)
+        within_range = within_range.ravel()
 
-        # Create a prediction array initialized with spline predictions
         cal_preds = np.copy(y_pred_spline)
-
-        # Replace predictions outside the range with the linear model predictions
-        cal_preds[~within_range & (tr.ravel() < self.cal_min)] = y_pred_left[
-            ~within_range & (tr.ravel() < self.cal_min)
+        cal_preds[~within_range & (source_rt.ravel() < self._calibrate_min)] = y_pred_left[
+            ~within_range & (source_rt.ravel() < self._calibrate_min)
         ]
-        cal_preds[~within_range & (tr.ravel() > self.cal_max)] = y_pred_right[
-            ~within_range & (tr.ravel() > self.cal_max)
+        cal_preds[~within_range & (source_rt.ravel() > self._calibrate_max)] = y_pred_right[
+            ~within_range & (source_rt.ravel() > self._calibrate_max)
         ]
-
         return np.array(cal_preds)
 
 
-def _process_arrays(
-    measured_tr: np.ndarray,
-    predicted_tr: np.ndarray,
+def _prepare_series(
+    target_rt: np.ndarray,
+    source_rt: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Process the measured and predicted retention times."""
-    # Check array lengths
-    if len(measured_tr) != len(predicted_tr):
+    """Prepare target/source arrays: shape, sort by source, cast to float32."""
+    if len(target_rt) != len(source_rt):
         raise ValueError(
-            f"Measured and predicted retention times must have the same length. "
-            f"Got {len(measured_tr)} and {len(predicted_tr)}."
+            "Target and source retention times must have the same length. Got "
+            f"{len(target_rt)} and {len(source_rt)}."
         )
+    if len(target_rt.shape) > 1:
+        target_rt = target_rt.flatten()
+    if len(source_rt.shape) > 1:
+        source_rt = source_rt.flatten()
 
-    # Ensure both arrays are 1D
-    if len(measured_tr.shape) > 1:
-        measured_tr = measured_tr.flatten()
-    if len(predicted_tr.shape) > 1:
-        predicted_tr = predicted_tr.flatten()
+    idx = np.argsort(source_rt)
+    target_rt = np.array(target_rt, dtype=np.float32)[idx]
+    source_rt = np.array(source_rt, dtype=np.float32)[idx]
 
-    # Sort arrays by predicted_tr
-    indices = np.argsort(predicted_tr)
-    measured_tr = np.array(measured_tr, dtype=np.float32)[indices]
-    predicted_tr = np.array(predicted_tr, dtype=np.float32)[indices]
-
-    return measured_tr, predicted_tr
+    return target_rt, source_rt
