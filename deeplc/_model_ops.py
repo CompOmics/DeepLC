@@ -228,4 +228,4 @@ def _predict_epoch(
             features = [feature_tensor.to(device) for feature_tensor in features]
             outputs = model(*features)
             predictions.append(outputs.cpu())
-    return torch.cat(predictions, dim=0)
+    return torch.cat(predictions, dim=0).squeeze()

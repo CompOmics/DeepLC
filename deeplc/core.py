@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_NAME = "full_hc_PXD005573_pub_1fd8363d9af9dcad3be7553c39396960.pt"
-DEFAULT_MODEL = DEEPLC_DIR / "models" / DEFAULT_MODEL_NAME
+DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / DEFAULT_MODEL_NAME
 
 
 def predict(
@@ -156,7 +156,7 @@ def finetune_and_predict(
 
     """
     # Fine-tune the model
-    LOGGER.info("Fine-tuning model...")s
+    LOGGER.info("Fine-tuning model...")
     reference_dataset = DeepLCDataset.from_psm_list(psm_list_reference)
     # TODO: Allow model to be saved or exported after fine-tuning
     finetuned_model = _model_ops.train(
