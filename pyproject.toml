@@ -32,20 +32,14 @@ keywords = [
 ]
 
 dependencies = [
-    "dask>2023",
     "torch>=2.6.0,<3",
-    "onnx2torch>=0.1.5",
     "numpy>=1.17",
     "pandas>=0.25",
     "scikit-learn>=1.2.0",
-    "psm_utils>=0.2.3"
+    "psm_utils>=0.2.3",
+    "onnx2torch>=1.5.15",  # Required as long as models are shipped in ONNX format
 ]
 
-[project.optional-dependencies]
-test = ["pytest", "matplotlib>=3,<4"]
-gui = ["gooey>=1.0"]
-plot = ["plotly>=5"]
-deepcallc = ["scikit-learn<2,>=0.24.0"]
 
 [project.scripts]
 deeplc = "deeplc.__main__:main"
@@ -55,6 +49,10 @@ deeplc-gui = "deeplc.gui:start_gui"
 GitHub = "https://github.com/compomics/deeplc"
 PyPi = "https://pypi.org/project/deeplc/"
 CompOmics = "https://www.compomics.com"
+
+[dependency-groups]
+dev = ["ruff", "pytest"]
+notebooks = ["ipykernel", "ipywidgets", "matplotlib", "seaborn"]
 
 [build-system]
 requires = ["setuptools"]

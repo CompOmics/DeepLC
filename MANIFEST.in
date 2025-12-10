@@ -1,5 +1,4 @@
-include deeplc/mods/*
+include deeplc/models/*
 include deeplc/package_data/**/*
 include deeplc/unimod/*
-include deeplc/aa_comp_rel.csv
 include deeplc/baseline_performance/*

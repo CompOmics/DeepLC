@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import cast
 
 import numpy as np
 from sklearn.linear_model import LinearRegression  # type: ignore[import]
@@ -27,17 +28,29 @@ class Calibration(ABC):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
+    @property
+    @abstractmethod
+    def is_fitted(self) -> bool:
+        """Indicates whether the calibration model has been fitted."""
+        ...
+
     @abstractmethod
     def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
         """Fit the calibration from source to target."""
+        ...
 
     @abstractmethod
     def transform(self, source_rt: np.ndarray) -> np.ndarray:
         """Transform source retention times into the calibrated target space."""
+        ...
 
 
 class IdentityCalibration(Calibration):
     """No calibration; returns inputs unchanged."""
+
+    @property
+    def is_fitted(self) -> bool:
+        return True
 
     def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:  # noqa: ARG002
         return None
@@ -55,7 +68,7 @@ class PiecewiseLinearCalibration(Calibration):
     ) -> None:
         """
         Piece-wise linear calibration based on per-split anchors.
-        
+
         Parameters
         ----------
         number_of_splits : int
@@ -78,6 +91,24 @@ class PiecewiseLinearCalibration(Calibration):
         self._slopes: np.ndarray | None = None
         self._intercepts: np.ndarray | None = None
 
+    @property
+    def is_fitted(self) -> bool:
+        return (
+            self._calibrate_min is not None
+            and self._calibrate_max is not None
+            and self._source_breakpoints is not None
+            and self._slopes is not None
+            and self._intercepts is not None
+        )
+
+    @property
+    def calibrate_min(self) -> float | None:
+        return self._calibrate_min
+
+    @property
+    def calibrate_max(self) -> float | None:
+        return self._calibrate_max
+
     def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
         """Fit a piece-wise linear model mapping source to target retention times."""
         target_rt, source_rt = _prepare_series(target_rt, source_rt)
@@ -90,22 +121,24 @@ class PiecewiseLinearCalibration(Calibration):
             )
 
         boundaries = np.linspace(cal_min, cal_max, self.number_of_splits + 1, dtype=np.float32)
-        starts = np.searchsorted(source_rt, boundaries[:-1], side="left")
-        ends = np.searchsorted(source_rt, boundaries[1:], side="left")
+        starts: np.ndarray = np.searchsorted(source_rt, boundaries[:-1], side="left")  # type: ignore[var-annotated]
+        ends: np.ndarray = np.searchsorted(source_rt, boundaries[1:], side="left")  # type: ignore[var-annotated]
 
-        tgt_anchors: list[float] = []
-        src_anchors: list[float] = []
-        for s, e in zip(starts, ends, strict=True):
-            if e <= s:
-                continue
-            t_seg = target_rt[s:e]
-            s_seg = source_rt[s:e]
-            if self.use_median:
-                tgt_anchors.append(float(np.median(t_seg)))
-                src_anchors.append(float(np.median(s_seg)))
-            else:
-                tgt_anchors.append(float(np.mean(t_seg)))
-                src_anchors.append(float(np.mean(s_seg)))
+        # Filter out empty segments
+        valid_segments = ends > starts
+        starts = starts[valid_segments]
+        ends = ends[valid_segments]
+
+        # Compute anchors for all segments
+        aggregate_func = np.median if self.use_median else np.mean
+        tgt_anchors = np.array(
+            [aggregate_func(target_rt[s:e]) for s, e in zip(starts, ends, strict=True)],
+            dtype=np.float32,
+        )
+        src_anchors = np.array(
+            [aggregate_func(source_rt[s:e]) for s, e in zip(starts, ends, strict=True)],
+            dtype=np.float32,
+        )
 
         if len(src_anchors) < 2:
             raise CalibrationError(
@@ -143,14 +176,13 @@ class PiecewiseLinearCalibration(Calibration):
 
     def transform(self, source_rt: np.ndarray) -> np.ndarray:
         """Transform source retention times using the fitted piece-wise linear model."""
-        if (
-            self._calibrate_min is None
-            or self._calibrate_max is None
-            or self._source_breakpoints is None
-            or self._slopes is None
-            or self._intercepts is None
-        ):
+        if not self.is_fitted:
             raise CalibrationError("The model has not been fitted yet. Call fit() first.")
+
+        # Ensure type checking knows these are not None
+        self._source_breakpoints = cast(np.ndarray, self._source_breakpoints)
+        self._slopes = cast(np.ndarray, self._slopes)
+        self._intercepts = cast(np.ndarray, self._intercepts)
 
         if source_rt.shape[0] == 0:
             return np.array([])
@@ -167,12 +199,13 @@ class PiecewiseLinearCalibration(Calibration):
 
     def get_calibration_curve(self) -> tuple[np.ndarray, np.ndarray]:
         """Return the calibration anchors as two arrays (x, y)."""
-        if (
-            self._source_breakpoints is None
-            or self._slopes is None
-            or self._intercepts is None
-        ):
+        if not self.is_fitted:
             raise CalibrationError("The model has not been fitted yet. Call fit() first.")
+
+        # Ensure type checking knows these are not None
+        self._source_breakpoints = cast(np.ndarray, self._source_breakpoints)
+        self._slopes = cast(np.ndarray, self._slopes)
+        self._intercepts = cast(np.ndarray, self._intercepts)
 
         x = self._source_breakpoints.astype(np.float64)
         y = np.empty_like(x, dtype=np.float64)
@@ -184,14 +217,6 @@ class PiecewiseLinearCalibration(Calibration):
             )
         return x, y
 
-    @property
-    def calibrate_min(self) -> float | None:
-        return self._calibrate_min
-
-    @property
-    def calibrate_max(self) -> float | None:
-        return self._calibrate_max
-
 
 class SplineTransformerCalibration(Calibration):
     def __init__(self) -> None:
@@ -202,6 +227,16 @@ class SplineTransformerCalibration(Calibration):
         self._model_main: Pipeline | LinearRegression | None = None
         self._model_right: LinearRegression | None = None
 
+    @property
+    def is_fitted(self) -> bool:
+        return (
+            self._calibrate_min is not None
+            and self._calibrate_max is not None
+            and self._model_left is not None
+            and self._model_main is not None
+            and self._model_right is not None
+        )
+
     def fit(
         self,
         target_rt: np.ndarray,
@@ -211,6 +246,7 @@ class SplineTransformerCalibration(Calibration):
         """Fit a spline-based model mapping source to target retention times."""
         target_rt, source_rt = _prepare_series(target_rt, source_rt)
 
+        # TODO: What's the use of `simplified`? Was taken from original code.
         if simplified:
             linear_model = LinearRegression()
             linear_model.fit(source_rt.reshape(-1, 1), target_rt)
@@ -241,25 +277,20 @@ class SplineTransformerCalibration(Calibration):
 
     def transform(self, source_rt: np.ndarray) -> np.ndarray:
         """Transform source retention times using the fitted spline model."""
-        if (
-            self._calibrate_min is None
-            or self._calibrate_max is None
-            or self._model_main is None
-            or self._model_left is None
-            or self._model_right is None
-        ):
+        if not self.is_fitted:
             raise CalibrationError("The model has not been fitted yet. Call fit() first.")
-        assert self._model_main is not None
-        assert self._model_left is not None
-        assert self._model_right is not None
+
+        # Ensure type checking knows the models are not None
+        model_main = cast(Pipeline | LinearRegression, self._model_main)
+        model_left = cast(LinearRegression, self._model_left)
+        model_right = cast(LinearRegression, self._model_right)
 
         if source_rt.shape[0] == 0:
             return np.array([])
 
-        y_pred_spline = self._model_main.predict(source_rt.reshape(-1, 1))
-        y_pred_left = self._model_left.predict(source_rt.reshape(-1, 1))
-        y_pred_right = self._model_right.predict(source_rt.reshape(-1, 1))
-
+        y_pred_spline = model_main.predict(source_rt.reshape(-1, 1))
+        y_pred_left = model_left.predict(source_rt.reshape(-1, 1))
+        y_pred_right = model_right.predict(source_rt.reshape(-1, 1))
         within_range = (source_rt >= self._calibrate_min) & (source_rt <= self._calibrate_max)
         within_range = within_range.ravel()
 

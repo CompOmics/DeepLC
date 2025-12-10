@@ -1,8 +1,10 @@
-# __all__ = ["DeepLC"]
+from importlib.metadata import version
 
-# from importlib.metadata import version
+from deeplc.core import calibrate_and_predict, finetune_and_predict, predict
 
-# __version__ = version("deeplc")
-
-
-# from deeplc.deeplc import DeepLC
+__version__: str = version("deeplc")
+__all__: list[str] = [
+    "predict",
+    "calibrate_and_predict",
+    "finetune_and_predict",
+]

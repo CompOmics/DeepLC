@@ -1,3 +1,5 @@
+# TODO: Update for new core functions and new data structures
+
 from pathlib import Path
 
 import numpy as np
@@ -98,7 +100,7 @@ def distribution_baseline(
     percentile = round((baseline_df["rel_mae_transfer_learning"] < mae_rel).mean() * 100, 1)
 
     # Calculate x-axis range with 5% padding
-    all_values = np.append(baseline_df["rel_mae_transfer_learning"].values, mae_rel)
+    all_values = np.append(baseline_df["rel_mae_transfer_learning"].to_numpy(), mae_rel)
     padding = (all_values.max() - all_values.min()) / 20  # 5% padding
     x_min = all_values.min() - padding
     x_max = all_values.max() + padding
