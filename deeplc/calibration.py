@@ -1,9 +1,4 @@
-"""
-Retention time calibration utilities.
-
-This module provides calibration strategies to map source retention times to
-an aligned target scale.
-"""
+"""Calibration utilities."""
 
 from __future__ import annotations
 
@@ -22,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class Calibration(ABC):
-    """Abstract base class for retention time calibration."""
+    """Abstract base class for calibration."""
 
     @abstractmethod
     def __init__(self, *args, **kwargs):
@@ -35,13 +30,13 @@ class Calibration(ABC):
         ...
 
     @abstractmethod
-    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
+    def fit(self, target: np.ndarray, source: np.ndarray) -> None:
         """Fit the calibration from source to target."""
         ...
 
     @abstractmethod
-    def transform(self, source_rt: np.ndarray) -> np.ndarray:
-        """Transform source retention times into the calibrated target space."""
+    def transform(self, source: np.ndarray) -> np.ndarray:
+        """Transform source values into the calibrated target space."""
         ...
 
 
@@ -52,11 +47,11 @@ class IdentityCalibration(Calibration):
     def is_fitted(self) -> bool:
         return True
 
-    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:  # noqa: ARG002
+    def fit(self, target: np.ndarray, source: np.ndarray) -> None:  # noqa: ARG002
         return None
 
-    def transform(self, source_rt: np.ndarray) -> np.ndarray:
-        return source_rt
+    def transform(self, source: np.ndarray) -> np.ndarray:
+        return source
 
 
 class PiecewiseLinearCalibration(Calibration):
@@ -72,10 +67,10 @@ class PiecewiseLinearCalibration(Calibration):
         Parameters
         ----------
         number_of_splits : int
-            Number of segments to split the source retention time range into.
+            Number of segments to split the source value range into.
             More segments allow more flexibility but may lead to overfitting.
         extrapolate : bool
-            If True, allows extrapolation outside the fitted source retention time range.
+            If True, allows extrapolation outside the fitted source value range.
             If False, clips input values to the fitted range.
         use_median : bool
             If True, uses the median of each segment to define anchors. If False, uses the mean.
@@ -109,20 +104,18 @@ class PiecewiseLinearCalibration(Calibration):
     def calibrate_max(self) -> float | None:
         return self._calibrate_max
 
-    def fit(self, target_rt: np.ndarray, source_rt: np.ndarray) -> None:
-        """Fit a piece-wise linear model mapping source to target retention times."""
-        target_rt, source_rt = _prepare_series(target_rt, source_rt)
+    def fit(self, target: np.ndarray, source: np.ndarray) -> None:
+        """Fit a piece-wise linear model mapping source to target values."""
+        target, source = _prepare_series(target, source)
 
-        cal_min = float(source_rt[0])
-        cal_max = float(source_rt[-1])
+        cal_min = float(source[0])
+        cal_max = float(source[-1])
         if (not np.isfinite(cal_min)) or (not np.isfinite(cal_max)) or (cal_max <= cal_min):
-            raise CalibrationError(
-                "Source retention times have zero or invalid range; cannot calibrate."
-            )
+            raise CalibrationError("Source values have zero or invalid range; cannot calibrate.")
 
         boundaries = np.linspace(cal_min, cal_max, self.number_of_splits + 1, dtype=np.float32)
-        starts: np.ndarray = np.searchsorted(source_rt, boundaries[:-1], side="left")  # type: ignore[var-annotated]
-        ends: np.ndarray = np.searchsorted(source_rt, boundaries[1:], side="left")  # type: ignore[var-annotated]
+        starts: np.ndarray = np.searchsorted(source, boundaries[:-1], side="left")  # type: ignore[var-annotated]
+        ends: np.ndarray = np.searchsorted(source, boundaries[1:], side="left")  # type: ignore[var-annotated]
 
         # Filter out empty segments
         valid_segments = ends > starts
@@ -132,11 +125,11 @@ class PiecewiseLinearCalibration(Calibration):
         # Compute anchors for all segments
         aggregate_func = np.median if self.use_median else np.mean
         tgt_anchors = np.array(
-            [aggregate_func(target_rt[s:e]) for s, e in zip(starts, ends, strict=True)],
+            [aggregate_func(target[s:e]) for s, e in zip(starts, ends, strict=True)],
             dtype=np.float32,
         )
         src_anchors = np.array(
-            [aggregate_func(source_rt[s:e]) for s, e in zip(starts, ends, strict=True)],
+            [aggregate_func(source[s:e]) for s, e in zip(starts, ends, strict=True)],
             dtype=np.float32,
         )
 
@@ -174,8 +167,8 @@ class PiecewiseLinearCalibration(Calibration):
             self._calibrate_max,
         )
 
-    def transform(self, source_rt: np.ndarray) -> np.ndarray:
-        """Transform source retention times using the fitted piece-wise linear model."""
+    def transform(self, source: np.ndarray) -> np.ndarray:
+        """Transform source values using the fitted piece-wise linear model."""
         if not self.is_fitted:
             raise CalibrationError("The model has not been fitted yet. Call fit() first.")
 
@@ -184,10 +177,10 @@ class PiecewiseLinearCalibration(Calibration):
         self._slopes = cast(np.ndarray, self._slopes)
         self._intercepts = cast(np.ndarray, self._intercepts)
 
-        if source_rt.shape[0] == 0:
+        if source.shape[0] == 0:
             return np.array([])
 
-        x = source_rt.astype(np.float32, copy=False)
+        x = source.astype(np.float32, copy=False)
         x_eval = (
             np.clip(x, self._calibrate_min, self._calibrate_max) if not self.extrapolate else x
         )
@@ -239,44 +232,44 @@ class SplineTransformerCalibration(Calibration):
 
     def fit(
         self,
-        target_rt: np.ndarray,
-        source_rt: np.ndarray,
+        target: np.ndarray,
+        source: np.ndarray,
         simplified: bool = False,
     ) -> None:
-        """Fit a spline-based model mapping source to target retention times."""
-        target_rt, source_rt = _prepare_series(target_rt, source_rt)
+        """Fit a spline-based model mapping source to target values."""
+        target, source = _prepare_series(target, source)
 
         # TODO: What's the use of `simplified`? Was taken from original code.
         if simplified:
             linear_model = LinearRegression()
-            linear_model.fit(source_rt.reshape(-1, 1), target_rt)
+            linear_model.fit(source.reshape(-1, 1), target)
             linear_model_left = linear_model
             spline_model = linear_model
             linear_model_right = linear_model
         else:
-            spline = SplineTransformer(degree=4, n_knots=int(len(source_rt) / 500) + 5)
+            spline = SplineTransformer(degree=4, n_knots=int(len(source) / 500) + 5)
             spline_model = make_pipeline(spline, LinearRegression())
-            spline_model.fit(source_rt.reshape(-1, 1), target_rt)
+            spline_model.fit(source.reshape(-1, 1), target)
 
-            n_top = int(len(source_rt) * 0.1)
-            X_left = source_rt[:n_top]
-            y_left = target_rt[:n_top]
+            n_top = int(len(source) * 0.1)
+            X_left = source[:n_top]
+            y_left = target[:n_top]
             linear_model_left = LinearRegression()
             linear_model_left.fit(X_left.reshape(-1, 1), y_left)
 
-            X_right = source_rt[-n_top:]
-            y_right = target_rt[-n_top:]
+            X_right = source[-n_top:]
+            y_right = target[-n_top:]
             linear_model_right = LinearRegression()
             linear_model_right.fit(X_right.reshape(-1, 1), y_right)
 
-        self._calibrate_min = float(np.min(source_rt))
-        self._calibrate_max = float(np.max(source_rt))
+        self._calibrate_min = float(np.min(source))
+        self._calibrate_max = float(np.max(source))
         self._model_left = linear_model_left
         self._model_main = spline_model
         self._model_right = linear_model_right
 
-    def transform(self, source_rt: np.ndarray) -> np.ndarray:
-        """Transform source retention times using the fitted spline model."""
+    def transform(self, source: np.ndarray) -> np.ndarray:
+        """Transform source values using the fitted spline model."""
         if not self.is_fitted:
             raise CalibrationError("The model has not been fitted yet. Call fit() first.")
 
@@ -285,42 +278,42 @@ class SplineTransformerCalibration(Calibration):
         model_left = cast(LinearRegression, self._model_left)
         model_right = cast(LinearRegression, self._model_right)
 
-        if source_rt.shape[0] == 0:
+        if source.shape[0] == 0:
             return np.array([])
 
-        y_pred_spline = model_main.predict(source_rt.reshape(-1, 1))
-        y_pred_left = model_left.predict(source_rt.reshape(-1, 1))
-        y_pred_right = model_right.predict(source_rt.reshape(-1, 1))
-        within_range = (source_rt >= self._calibrate_min) & (source_rt <= self._calibrate_max)
+        y_pred_spline = model_main.predict(source.reshape(-1, 1))
+        y_pred_left = model_left.predict(source.reshape(-1, 1))
+        y_pred_right = model_right.predict(source.reshape(-1, 1))
+        within_range = (source >= self._calibrate_min) & (source <= self._calibrate_max)
         within_range = within_range.ravel()
 
         cal_preds = np.copy(y_pred_spline)
-        cal_preds[~within_range & (source_rt.ravel() < self._calibrate_min)] = y_pred_left[
-            ~within_range & (source_rt.ravel() < self._calibrate_min)
+        cal_preds[~within_range & (source.ravel() < self._calibrate_min)] = y_pred_left[
+            ~within_range & (source.ravel() < self._calibrate_min)
         ]
-        cal_preds[~within_range & (source_rt.ravel() > self._calibrate_max)] = y_pred_right[
-            ~within_range & (source_rt.ravel() > self._calibrate_max)
+        cal_preds[~within_range & (source.ravel() > self._calibrate_max)] = y_pred_right[
+            ~within_range & (source.ravel() > self._calibrate_max)
         ]
         return np.array(cal_preds)
 
 
 def _prepare_series(
-    target_rt: np.ndarray,
-    source_rt: np.ndarray,
+    target: np.ndarray,
+    source: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Prepare target/source arrays: shape, sort by source, cast to float32."""
-    if len(target_rt) != len(source_rt):
+    if len(target) != len(source):
         raise ValueError(
-            "Target and source retention times must have the same length. Got "
-            f"{len(target_rt)} and {len(source_rt)}."
+            "Target and source values must have the same length. Got "
+            f"{len(target)} and {len(source)}."
         )
-    if len(target_rt.shape) > 1:
-        target_rt = target_rt.flatten()
-    if len(source_rt.shape) > 1:
-        source_rt = source_rt.flatten()
+    if len(target.shape) > 1:
+        target = target.flatten()
+    if len(source.shape) > 1:
+        source = source.flatten()
 
-    idx = np.argsort(source_rt)
-    target_rt = np.array(target_rt, dtype=np.float32)[idx]
-    source_rt = np.array(source_rt, dtype=np.float32)[idx]
+    idx = np.argsort(source)
+    target = np.array(target, dtype=np.float32)[idx]
+    source = np.array(source, dtype=np.float32)[idx]
 
-    return target_rt, source_rt
+    return target, source
