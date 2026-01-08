@@ -94,7 +94,9 @@ def calibrate_and_predict(
 
     # Fit calibration
     if calibration is None:
-        LOGGER.info("No calibration provided, using SplineTransformerCalibration by default.")
+        LOGGER.info(
+            "No calibration provided, using SplineTransformerCalibration by default."
+        )
         calibration = SplineTransformerCalibration()
     elif not isinstance(calibration, Calibration):
         raise ValueError(
@@ -156,14 +158,11 @@ def finetune_and_predict(
 
     """
     # Fine-tune the model
-    LOGGER.info("Fine-tuning model...")
-    reference_dataset = DeepLCDataset.from_psm_list(psm_list_reference)
-    # TODO: Allow model to be saved or exported after fine-tuning
-    finetuned_model = _model_ops.train(
-        model=model or DEFAULT_MODEL,
-        train_data=reference_dataset,
-        trainable_layers="33_1" if partial_freeze else None,  # TODO: Don't hardcode
-        **(train_kwargs or {}),  # TODO: How many epochs for fine-tuning?
+    finetuned_model = finetune(
+        psm_list_reference=psm_list_reference,
+        model=model,
+        partial_freeze=partial_freeze,
+        train_kwargs=train_kwargs,
     )
 
     # Predict retention times with fine-tuned model
@@ -176,7 +175,9 @@ def finetune_and_predict(
 
     # Fit calibration
     if calibration is None:
-        LOGGER.info("No calibration provided, using PiecewiseLinearCalibration by default.")
+        LOGGER.info(
+            "No calibration provided, using PiecewiseLinearCalibration by default."
+        )
         calibration = PiecewiseLinearCalibration()
     elif not isinstance(calibration, Calibration):
         raise ValueError(
@@ -197,3 +198,40 @@ def finetune_and_predict(
     calibrated_rt = calibration.transform(predicted_rt)
 
     return calibrated_rt
+
+
+def finetune(
+    psm_list_reference: PSMList,
+    model: torch.nn.Module | PathLike | str | None = None,
+    partial_freeze: bool = False,
+    train_kwargs: dict | None = None,
+) -> torch.nn.Module:
+    """
+    Fine-tune the model.
+
+    Parameters
+    ----------
+    psm_list_reference
+        List of PSMs to use as reference for fine-tuning.
+    model
+        Trained model or path to model file.
+    partial_freeze
+        If True, only the final layer of the model will be finetuned.
+    train_kwargs
+        Additional keyword arguments to pass to the training function.
+
+    Returns
+    -------
+    torch.nn.Module
+        Fine-tuned model.
+
+    """
+    LOGGER.info("Fine-tuning model...")
+    reference_dataset = DeepLCDataset.from_psm_list(psm_list_reference)
+    finetuned_model = _model_ops.train(
+        model=model or DEFAULT_MODEL,
+        train_data=reference_dataset,
+        trainable_layers="33_1" if partial_freeze else None,  # TODO: Don't hardcode
+        **(train_kwargs or {}),
+    )
+    return finetuned_model
