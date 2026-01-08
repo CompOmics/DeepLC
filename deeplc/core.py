@@ -94,7 +94,7 @@ def calibrate_and_predict(
 
     # Fit calibration
     if calibration is None:
-        LOGGER.info(
+        LOGGER.debug(
             "No calibration provided, using SplineTransformerCalibration by default."
         )
         calibration = SplineTransformerCalibration()
@@ -105,6 +105,11 @@ def calibrate_and_predict(
 
     if not calibration.is_fitted:
         LOGGER.info("Fitting calibration...")
+        if any(psm_list_reference["is_decoy"]):
+            LOGGER.warning(
+                "Reference PSM list contains decoy PSMs. "
+                "These will be included in the calibration fitting."
+            )
         target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
         source_rt_cal = predict(
             psm_list=psm_list_reference,
@@ -186,6 +191,13 @@ def finetune_and_predict(
 
     # TODO: Is this necessary? Should it work equally well without calibration?
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
+    if any(
+        psm_list_reference["is_decoy"]
+    ):  #  remove this one since already in finetune?
+        LOGGER.warning(
+            "Reference PSM list contains decoy PSMs. "
+            "These will be included in the calibration fitting."
+        )
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
     source_rt_cal = predict(
         psm_list=psm_list_reference,
@@ -227,6 +239,11 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
+    if any(psm_list_reference["is_decoy"]):
+        LOGGER.warning(
+            "Reference PSM list contains decoy PSMs. "
+            "These will be included in the calibration fitting."
+        )
     reference_dataset = DeepLCDataset.from_psm_list(psm_list_reference)
     finetuned_model = _model_ops.train(
         model=model or DEFAULT_MODEL,
