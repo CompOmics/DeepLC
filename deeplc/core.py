@@ -11,12 +11,12 @@ import torch
 from psm_utils.psm_list import PSMList
 
 from deeplc import _model_ops
-from deeplc._data import DeepLCDataset
 from deeplc.calibration import (
     Calibration,
     PiecewiseLinearCalibration,
     SplineTransformerCalibration,
 )
+from deeplc.data import DeepLCDataset
 
 LOGGER = logging.getLogger(__name__)
 
