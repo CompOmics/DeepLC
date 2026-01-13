@@ -825,11 +825,21 @@ if __name__ == "__main__":
         psm_list,
         n_knots=12,
         alpha=1e-3,
-        min_overlap=None,  # or an int
+        min_overlap=None,
         plot_diagnostics=False,
         make_sd_plot=False,
     )
 
     ref = out.result.ref
 
-    print(ref)
+    filtered, stats = filter_by_occurrence_and_sd(
+        out.result.calibrated_matrix,
+        min_occurrence_pct=10,
+        gradient_length=ref["rt_ref"].max() - ref["rt_ref"].min(),
+        max_sd_rel=0.03,
+        min_runs=2,
+        return_stats=True,
+        verbose=True,
+    )
+
+    print(filtered.median(axis=1))
