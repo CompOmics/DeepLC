@@ -7,7 +7,7 @@ import warnings
 from re import sub
 
 import numpy as np
-from psm_utils import Peptidoform, PSMList
+from psm_utils import Peptidoform
 from pyteomics import mass
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,9 @@ def _apply_modifications(
         try:
             mod_comp = token[1][0].composition
         except Exception:
-            warnings.warn(f"Skipping mod at pos {i}: {token[1]}", stacklevel=2)
+            warnings.warn(
+                f"Skipping modification without known composition: {token[1]}", stacklevel=2
+            )
             continue
         for atom_comp, change in mod_comp.items():
             try:
@@ -189,6 +191,8 @@ def encode_peptidoform(
     matrix_all = np.sum(std_matrix, axis=0)
     matrix_all = np.append(matrix_all, seq_len)
     if add_ccs_features:
+        if not charge:
+            raise ValueError(f"Peptidoform has no charge: {peptidoform}")
         matrix_all = np.append(matrix_all, (seq.count("H")) / seq_len)
         matrix_all = np.append(
             matrix_all, (seq.count("F") + seq.count("W") + seq.count("Y")) / seq_len
@@ -198,7 +202,7 @@ def encode_peptidoform(
         matrix_all = np.append(matrix_all, charge)
 
     matrix_sum = _compute_rolling_sum(std_matrix.T, n=2)[:, ::2].T
-    
+
     matrix_global = np.concatenate([matrix_all, pos_matrix.flatten()])
 
     return {

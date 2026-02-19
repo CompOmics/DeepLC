@@ -14,7 +14,7 @@ class LeakyReLUSaturation(nn.Module):
     Leaky ReLU activation with saturation (max value clipping).
 
     This custom activation function applies leaky ReLU followed by clamping
-    to a maximum value, matching the TensorFlow implementation's behavior.
+    to a maximum value, matching the original TensorFlow implementation's behavior.
 
     Parameters
     ----------
@@ -68,15 +68,12 @@ class ConvBlock(nn.Module):
         self.use_pooling = use_pooling
         self.kernel_size = kernel_size
 
-        # For 'same' padding behavior, PyTorch Conv1d doesn't support asymmetric padding
-        # So we'll manually pad in forward() if needed
-        # Use padding=0 here and handle in forward
         self.conv1 = nn.Conv1d(
             in_channels,
             out_channels,
             kernel_size=kernel_size,
             stride=1,
-            padding='same',  # Let PyTorch handle it - it will do the best it can
+            padding="same",
         )
         self.activation1 = LeakyReLUSaturation()
 
@@ -85,7 +82,7 @@ class ConvBlock(nn.Module):
             out_channels,
             kernel_size=kernel_size,
             stride=1,
-            padding='same',
+            padding="same",
         )
         self.activation2 = LeakyReLUSaturation()
 
@@ -177,7 +174,7 @@ class OneHotBranch(nn.Module):
             2,
             kernel_size=kernel_size,
             stride=1,
-            padding='same',
+            padding="same",
         )
         self.activation1 = nn.Tanh()
 
@@ -186,7 +183,7 @@ class OneHotBranch(nn.Module):
             2,
             kernel_size=kernel_size,
             stride=1,
-            padding='same',
+            padding="same",
         )
         self.activation2 = nn.Tanh()
 

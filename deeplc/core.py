@@ -16,7 +16,7 @@ from deeplc.calibration import (
     PiecewiseLinearCalibration,
     SplineTransformerCalibration,
 )
-from deeplc.data import DeepLCDataset
+from deeplc.data import DeepLCDataset, split_datasets
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ def predict(
         Retention time predictions.
 
     """
+    LOGGER.info("Predicting retention times...")
     return _model_ops.predict(
         model=model or DEFAULT_MODEL,
         data=DeepLCDataset.from_psm_list(psm_list),
@@ -55,7 +56,7 @@ def predict(
     ).numpy()
 
 
-def calibrate_and_predict(
+def predict_and_calibrate(
     psm_list: PSMList,
     psm_list_reference: PSMList,
     model: torch.nn.Module | PathLike | str | None = None,
@@ -63,7 +64,7 @@ def calibrate_and_predict(
     predict_kwargs: dict | None = None,
 ) -> np.ndarray:
     """
-    Calibrate the model and predict new retention times.
+    Predict retention times and calibrate to a reference.
 
     Parameters
     ----------
@@ -93,16 +94,16 @@ def calibrate_and_predict(
     )
 
     # Fit calibration
+    # Validate passed calibration instance or create default if None
     if calibration is None:
-        LOGGER.debug(
-            "No calibration provided, using SplineTransformerCalibration by default."
-        )
+        LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
         calibration = SplineTransformerCalibration()
     elif not isinstance(calibration, Calibration):
         raise ValueError(
             f"Expected calibration to be of type Calibration, got {type(calibration)}"
         )
 
+    # Fit calibration if not already fitted
     if not calibration.is_fitted:
         LOGGER.info("Fitting calibration...")
         if any(psm_list_reference["is_decoy"]):
@@ -116,7 +117,7 @@ def calibrate_and_predict(
             model=model,
             predict_kwargs=predict_kwargs,
         )
-        calibration.fit(target_rt=target_rt_cal, source_rt=source_rt_cal)
+        calibration.fit(target=target_rt_cal, source=source_rt_cal)
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
 
@@ -136,7 +137,7 @@ def finetune_and_predict(
     predict_kwargs: dict | None = None,
 ) -> np.ndarray:
     """
-    Fine-tune the model and predict new retention times.
+    Fine-tune the model to a reference and predict new retention times.
 
     Parameters
     ----------
@@ -164,7 +165,7 @@ def finetune_and_predict(
     """
     # Fine-tune the model
     finetuned_model = finetune(
-        psm_list_reference=psm_list_reference,
+        psm_list=psm_list_reference,
         model=model,
         partial_freeze=partial_freeze,
         train_kwargs=train_kwargs,
@@ -179,10 +180,9 @@ def finetune_and_predict(
     )
 
     # Fit calibration
+    # Validate passed calibration instance or create default if None
     if calibration is None:
-        LOGGER.info(
-            "No calibration provided, using PiecewiseLinearCalibration by default."
-        )
+        LOGGER.info("No calibration provided, using PiecewiseLinearCalibration by default.")
         calibration = PiecewiseLinearCalibration()
     elif not isinstance(calibration, Calibration):
         raise ValueError(
@@ -190,10 +190,9 @@ def finetune_and_predict(
         )
 
     # TODO: Is this necessary? Should it work equally well without calibration?
+    # Fit calibration if not already fitted
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
-    if any(
-        psm_list_reference["is_decoy"]
-    ):  #  remove this one since already in finetune?
+    if any(psm_list_reference["is_decoy"]):  #  remove this one since already in finetune?
         LOGGER.warning(
             "Reference PSM list contains decoy PSMs. "
             "These will be included in the calibration fitting."
@@ -204,7 +203,7 @@ def finetune_and_predict(
         model=finetuned_model,
         predict_kwargs=predict_kwargs,
     )
-    calibration.fit(target_rt=target_rt_cal, source_rt=source_rt_cal)
+    calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
     # Apply calibration to predictions
     calibrated_rt = calibration.transform(predicted_rt)
@@ -213,18 +212,23 @@ def finetune_and_predict(
 
 
 def finetune(
-    psm_list_reference: PSMList,
+    psm_list: PSMList,
+    psm_list_validation: PSMList | None = None,
+    validation_split: float = 0.1,
     model: torch.nn.Module | PathLike | str | None = None,
     partial_freeze: bool = False,
     train_kwargs: dict | None = None,
 ) -> torch.nn.Module:
     """
-    Fine-tune the model.
+    Fine-tune an existing model.
 
     Parameters
     ----------
-    psm_list_reference
+    psm_list
         List of PSMs to use as reference for fine-tuning.
+    psm_list_validation
+        List of PSMs to use for validation during fine-tuning. If None, a split from psm_list is
+        used.
     model
         Trained model or path to model file.
     partial_freeze
@@ -239,16 +243,65 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
-    if any(psm_list_reference["is_decoy"]):
-        LOGGER.warning(
-            "Reference PSM list contains decoy PSMs. "
-            "These will be included in the calibration fitting."
-        )
-    reference_dataset = DeepLCDataset.from_psm_list(psm_list_reference)
+    if any(psm_list["is_decoy"]):
+        # TODO: Move to reusable validation step?
+        LOGGER.warning("PSM list contains decoy PSMs. These will be used for fine tuning.")
+    training_data = DeepLCDataset.from_psm_list(psm_list)
+    validation_data = (
+        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+    )
+    training_dataset, validation_dataset = split_datasets(
+        training_data, validation_data=validation_data, validation_split=validation_split
+    )
+    LOGGER.info("Training new model...")
     finetuned_model = _model_ops.train(
         model=model or DEFAULT_MODEL,
-        train_data=reference_dataset,
+        train_dataset=training_dataset,
+        validation_dataset=validation_dataset,
         trainable_layers="33_1" if partial_freeze else None,  # TODO: Don't hardcode
         **(train_kwargs or {}),
     )
     return finetuned_model
+
+
+def train(
+    psm_list: PSMList,
+    psm_list_validation: PSMList | None = None,
+    validation_split: float = 0.1,
+    train_kwargs: dict | None = None,
+) -> torch.nn.Module:
+    """
+    Train a new model from scratch.
+
+    Parameters
+    ----------
+    psm_list
+        List of PSMs to use for training.
+    psm_list_validation
+        List of PSMs to use for validation. If None, a split from psm_list is used.
+    validation_split
+        If psm_list_validation is None, this fraction of psm_list will be used for validation.
+    train_kwargs
+        Additional keyword arguments to pass to the training function.
+
+    Returns
+    -------
+    torch.nn.Module
+        Trained model.
+
+    """
+    training_data = DeepLCDataset.from_psm_list(psm_list)
+    validation_data = (
+        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+    )
+    training_dataset, validation_dataset = split_datasets(
+        training_data, validation_data=validation_data, validation_split=validation_split
+    )
+    LOGGER.info("Training new model...")
+    trained_model = _model_ops.train(
+        model=None,
+        train_dataset=training_dataset,
+        validation_dataset=validation_dataset,
+        **(train_kwargs or {}),
+    )
+    return trained_model

@@ -1,4 +1,4 @@
-# TODO: Update for new core functions and new data structures
+# TODO: Use package data; potentially move to MS²Rescore?
 
 from pathlib import Path
 

@@ -8,12 +8,15 @@ from pathlib import Path
 
 import torch
 from rich.progress import track
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from deeplc._architecture import DeepLCModel
-from deeplc.data import split_datasets
+from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
+
+
+# TODO: Implement Lightning?
 
 
 def load_model(
@@ -50,10 +53,10 @@ def load_model(
 
 def train(
     model: torch.nn.Module | PathLike | str | None,
-    train_data: Dataset,
-    validation_data: Dataset | None = None,
-    validation_split: float = 0.1,
+    train_dataset: DeepLCDataset | Subset[DeepLCDataset],
+    validation_dataset: DeepLCDataset | Subset[DeepLCDataset],
     device: str = "cpu",
+    num_workers: int = 0,
     learning_rate: float = 0.001,
     epochs: int = 25,
     batch_size: int = 512,
@@ -67,14 +70,14 @@ def train(
     ----------
     model
         Model to train or path to model file.
-    train_data
+    train_dataset
         Training dataset.
-    validation_data
-        Validation dataset. If None, a portion of train_data is used.
-    validation_split
-        Fraction of train_data to use for validation when validation_data is None.
+    validation_dataset
+        Validation dataset.
     device
         Device to train on ('cpu' or 'cuda').
+    num_workers
+        Number of worker processes for data loading.
     learning_rate
         Learning rate for optimizer.
     epochs
@@ -100,15 +103,12 @@ def train(
         _freeze_layers(model, trainable_layers)
         logger.debug(f"Frozen all layers except those containing '{trainable_layers}'")
 
-    # Parse dataset and split arguments; setup loaders
-    train_dataset, val_dataset = split_datasets(
-        train_data, validation_data, validation_split
-    )
+    # Parse datasets; setup loaders
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
+        validation_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
     optimizer = _get_optimizer(model, learning_rate)

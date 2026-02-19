@@ -33,17 +33,17 @@ keywords = [
 
 dependencies = [
     "torch>=2.6.0,<3",
-    "numpy>=1.17",
-    "pandas>=0.25",
-    "scikit-learn>=1.2.0",
-    "psm_utils>=0.2.3",
-    "onnx2torch>=1.5.15",  # Required as long as models are shipped in ONNX format
+    "numpy>=1.17,<3",
+    "pandas>=0.25,<3",
+    "scikit-learn>=1.2.0,<2",
+    "psm_utils>=1.5,<2",
+    "onnx2torch>=1.5,<2",
 ]
 
 
-[project.scripts]
-deeplc = "deeplc.__main__:main"
-deeplc-gui = "deeplc.gui:start_gui"
+# [project.scripts]
+# deeplc = "deeplc.__main__:main"
+# deeplc-gui = "deeplc_gui.__main__:main"
 
 [project.urls]
 GitHub = "https://github.com/compomics/deeplc"
@@ -52,6 +52,13 @@ CompOmics = "https://www.compomics.com"
 
 [dependency-groups]
 dev = ["ruff", "pytest"]
+docs = [
+    "numpydoc>=1,<2",
+    "sphinx_rtd_theme",
+    "sphinx-autobuild",
+    "sphinx_mdinclude",
+    "sphinx",
+]
 notebooks = ["ipykernel", "ipywidgets", "matplotlib", "seaborn"]
 
 [build-system]
@@ -67,7 +74,7 @@ line-length = 99
 target-version = 'py311'
 
 [tool.ruff.lint]
-select = ["E", "F", "UP", "B", "SIM", "I"]
+select = ["E", "W", "F", "UP", "B", "SIM", "I"]
 
 [tool.ruff.format]
 docstring-code-format = true
