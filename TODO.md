@@ -6,12 +6,16 @@
 [x] Streamlined use of Data and DataLoader
 [x] Module with PyTorch-level model operations (train, predict, load, save)
 [x] Refactor core functions to use new model operations module
+[x] Add architecture module for training new models
 
 ## Alpha 2 release
 
-[ ] Add architecture module for training new models
-[ ] Get calibration/finetuning PSMs from main psm_list using score/q-value for best selection?
+[ ] Unit & integration tests
+[ ] Retrain models with native pyTorch
+[ ] Get calibration/finetuning PSMs from main psm_list using score/q-value for best selection? (Ralf)
 [ ] Add CLI commands with file I/O
+[ ] Integrate align.py functionality
+[ ] Plot module: Update or move to MS²Rescore report module?
 
 ## Beta release
 
