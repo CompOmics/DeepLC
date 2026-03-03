@@ -24,6 +24,36 @@ and this project adheres to
 - Removed library-feature for storing past predictions
 - Removed legacy CALLC functionality
 
+## [3.1.13] - 2025-09-01
+
+### Changed
+
+- Bump version
+
+## [3.1.12] - 2025-09-01
+
+### Changed
+
+- Bump version
+
+## [3.1.11] - 2025-09-01
+
+### Changed
+
+- Bump version
+
+## [3.1.10] - 2025-08-27
+
+### Changed
+
+- Fix no calibration peptides when looking for best model
+
+## [3.1.9] - 2025-07-14
+
+### Changed
+
+- When no calibration peptides are present, just fit a model that returns the original predicted value
+
 ## [3.1.8] - 2025-02-21
 
 ### Changed
