@@ -18,11 +18,14 @@ jobs:
 
       - name: Lint
         uses: astral-sh/ruff-action@v3
+        with:
+          src: "deeplc"
 
       - name: Check formatting
         uses: astral-sh/ruff-action@v3
         with:
-          args: "format --check --diff"
+          args: "format --check --diff deeplc"
+          src: "deeplc"
 
   test-python-package:
     needs: lint-python-package
