@@ -7,6 +7,7 @@ LOGGER = logging.getLogger(__name__)
 
 # TODO: Add CLI functionality
 
+
 def _setup_logging(passed_level):
     log_mapping = {
         "critical": logging.CRITICAL,

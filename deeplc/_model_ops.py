@@ -25,15 +25,11 @@ def load_model(
 ) -> torch.nn.Module:
     """Load a model from a file or return a randomly initialized model if none is provided."""
     # If device is not specified, use the default device (GPU if available, else CPU)
-    selected_device = device or torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load model from file if a path is provided
     if isinstance(model, str | Path):
-        loaded_model = torch.load(
-            model, weights_only=False, map_location=selected_device
-        )
+        loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
     elif isinstance(model, torch.nn.Module):
         loaded_model = model
     elif model is None:
@@ -41,9 +37,7 @@ def load_model(
         loaded_model = DeepLCModel()
         logger.debug("Initialized new DeepLCModel with default architecture")
     else:
-        raise TypeError(
-            f"Expected a PyTorch Module or a file path, got {type(model)} instead."
-        )
+        raise TypeError(f"Expected a PyTorch Module or a file path, got {type(model)} instead.")
 
     # Ensure the model is on the specified device
     loaded_model.to(selected_device)
@@ -151,9 +145,7 @@ def predict(
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(
-        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
+    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     predictions = _predict_epoch(model, data_loader, device)
     return predictions.cpu().detach()
 
@@ -167,9 +159,7 @@ def evaluate(
 ) -> float:
     """Evaluate the model on the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(
-        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
+    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     loss_fn = torch.nn.L1Loss()
     avg_loss = _validate_epoch(model, data_loader, loss_fn, device)
     return avg_loss
@@ -181,9 +171,7 @@ def _freeze_layers(model: torch.nn.Module, unfreeze_keyword: str) -> None:
         param.requires_grad = unfreeze_keyword in name
 
 
-def _get_optimizer(
-    model: torch.nn.Module, learning_rate: float
-) -> torch.optim.Optimizer:
+def _get_optimizer(model: torch.nn.Module, learning_rate: float) -> torch.optim.Optimizer:
     return torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=learning_rate,
