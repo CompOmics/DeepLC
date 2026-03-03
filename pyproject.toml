@@ -1,6 +1,6 @@
 [project]
 name = "deeplc"
-version = "4.0.0-dev1"
+version = "4.0.0-alpha.1"
 description = "DeepLC: Retention time prediction for (modified) peptides using Deep Learning."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -30,7 +30,6 @@ keywords = [
     "retention time",
     "prediction",
 ]
-
 dependencies = [
     "torch>=2.6.0,<3",
     "numpy>=1.17,<3",
@@ -39,7 +38,6 @@ dependencies = [
     "psm_utils>=1.5,<2",
     "onnx2torch>=1.5,<2",
 ]
-
 
 # [project.scripts]
 # deeplc = "deeplc.__main__:main"

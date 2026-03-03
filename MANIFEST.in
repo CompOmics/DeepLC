@@ -1,4 +1,3 @@
 include deeplc/models/*
 include deeplc/package_data/**/*
-include deeplc/unimod/*
 include deeplc/baseline_performance/*

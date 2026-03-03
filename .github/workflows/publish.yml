@@ -1,111 +1,107 @@
-name: Publish to PyPI and GitHub release
+name: Publish
 
 on:
-  push:
-    tags:
-    - 'v*'
+  release:
+    types: [created]
+  workflow_dispatch:
 
 jobs:
-  python-package:
+  build-python-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build
+        run: uv build --no-sources
+
+      - name: Upload dists
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-python-package:
+    needs: build-python-package
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build flake8
-    - name: Check for syntax errors
-      run: |
-        flake8 ./deeplc --count --select=E9,F63,F7,F82 --show-source --statistics
-    - name: Build package
-      run: |
-        python -m build . --sdist --wheel
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        skip-existing: true
-    - name: Upload compiled wheels
-      uses: actions/upload-artifact@v4
-      with:
-        name: python-wheels
-        path: dist/*.whl
 
-  windows-installer:
-    runs-on: windows-latest
-    needs: python-package
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install .[gui] pyinstaller
-    - name: Install Inno Setup
-      uses: crazy-max/ghaction-chocolatey@v3
-      with:
-        args: install innosetup -y --allow-unofficial --force
-    - name: Run pyinstaller
-      run: pyinstaller ./deeplc_pyinstaller.spec --clean --noconfirm
-    - name: Test built DeepLC exe
-      run: dist/deeplc/deeplc.exe --ignore-gooey --help
-    - name: Run Inno Setup
-      run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{  github.ref_name }}
-    - name: Upload installer
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-installer
-        path: dist/*.exe
+      - name: Download dists
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
 
-  git-release:
-    runs-on: ubuntu-latest
-    needs: [python-package, windows-installer]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Download installer
-      uses: actions/download-artifact@v4
-      with:
-        path: dist
-    - name: Create GitHub Release
-      uses: docker://antonyurchenko/git-release:v6
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        DRAFT_RELEASE: "false"
-        PRE_RELEASE: "false"
-        CHANGELOG_FILE: "CHANGELOG.md"
-      with:
-        args: |
-          dist/**/*.exe
-          dist/**/*.whl
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
 
-  build-streamlit-image:
-    runs-on: ubuntu-latest
-    needs: python-package
-    steps:
-    - uses: actions/checkout@v4
-    - id: latest_release
-      uses: pozetroninc/github-action-get-latest-release@master
-      with:
-        owner: compomics
-        repo: DeepLC
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build and push to ghcr.io
-      uses: docker/build-push-action@v5
-      with:
-        context: streamlit
-        push: true
-        tags: |
-          ghcr.io/compomics/deeplc-streamlit:${{ steps.latest_release.outputs.release }}
-          ghcr.io/compomics/deeplc-streamlit:latest
+  # windows-installer:
+  #   runs-on: windows-latest
+  #   needs: python-package
+  #   steps:
+  #   - uses: actions/checkout@v6
+  #   - uses: actions/setup-python@v5
+  #     with:
+  #       python-version: '3.11'
+  #   - name: Install dependencies
+  #     run: |
+  #       python -m pip install --upgrade pip
+  #       pip install .[gui] pyinstaller
+  #   - name: Install Inno Setup
+  #     uses: crazy-max/ghaction-chocolatey@v3
+  #     with:
+  #       args: install innosetup -y --allow-unofficial --force
+  #   - name: Run pyinstaller
+  #     run: pyinstaller ./deeplc_pyinstaller.spec --clean --noconfirm
+  #   - name: Test built DeepLC exe
+  #     run: dist/deeplc/deeplc.exe --ignore-gooey --help
+  #   - name: Run Inno Setup
+  #     run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{  github.ref_name }}
+  #   - name: Upload installer
+  #     uses: actions/upload-artifact@v4
+  #     with:
+  #       name: windows-installer
+  #       path: dist/*.exe
+  #   - name: Upload installer to release
+  #     uses: svenstaro/upload-release-action@v2
+  #     with:
+  #       repo_token: ${{ secrets.GITHUB_TOKEN }}
+  #       tag: ${{ github.ref }}
+  #       file_glob: true
+  #       file: dist/*.exe
+
+  # build-streamlit-image:
+  #   runs-on: ubuntu-latest
+  #   needs: publish-python-package
+
+  #   steps:
+  #     - uses: actions/checkout@v6
+
+  #     - name: Login to GitHub Container Registry
+  #       uses: docker/login-action@v3
+  #       with:
+  #         registry: ghcr.io
+  #         username: ${{ github.repository_owner }}
+  #         password: ${{ secrets.GITHUB_TOKEN }}
+
+  #     - name: Build and push to ghcr.io
+  #       uses: docker/build-push-action@v5
+  #       with:
+  #         context: streamlit
+  #         push: true
+  #         tags: |
+  #           ghcr.io/compomics/deeplc-streamlit:${{ github.ref }}
+  #           ghcr.io/compomics/deeplc-streamlit:latest
