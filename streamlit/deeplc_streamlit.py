@@ -109,7 +109,8 @@ class StreamlitUI:
 
             st.subheader("Prediction speed boost")
             self.user_input["use_library"] = st.checkbox(
-                "Use prediction library for speed-up", help=self.texts.Help.use_library
+                "Use prediction library for speed-up",
+                help=self.texts.Help.use_library,
             )
             st.markdown(self.texts.Help.use_library_agreement)
 
@@ -334,9 +335,9 @@ class WebpageTexts:
             ---
 
             Currently using the following package versions: <br />
-            [![DeepLC](https://img.shields.io/badge/deeplc-{version('deeplc')}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/compomics/deeplc)
-            [![Tensorflow](https://img.shields.io/badge/tensorflow-{version('tensorflow')}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/tensorflow/tensorflow)
-            [![Streamlit](https://img.shields.io/badge/streamlit-{version('streamlit')}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/streamlit/streamlit)
+            [![DeepLC](https://img.shields.io/badge/deeplc-{version("deeplc")}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/compomics/deeplc)
+            [![Tensorflow](https://img.shields.io/badge/tensorflow-{version("tensorflow")}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/tensorflow/tensorflow)
+            [![Streamlit](https://img.shields.io/badge/streamlit-{version("streamlit")}-blue?style=flat-square&logoColor=white&logo=pypi)](https://github.com/streamlit/streamlit)
 
             Latest DeepLC version:<br />
             ![PyPI](https://img.shields.io/pypi/v/deeplc?style=flat-square&logoColor=white&logo=pypi)

@@ -1,5 +1,6 @@
 """DeepLC exceptions."""
 
+
 class DeepLCError(Exception):
     pass
 

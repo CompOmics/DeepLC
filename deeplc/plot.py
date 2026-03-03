@@ -1,3 +1,5 @@
+# TODO: Use package data; potentially move to MS²Rescore?
+
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +14,7 @@ def scatter(
     observed_column: str = "Observed retention time",
     xaxis_label: str = "Observed retention time",
     yaxis_label: str = "Predicted retention time",
-    plot_title: str = "Predicted vs. observed retention times"
+    plot_title: str = "Predicted vs. observed retention times",
 ) -> go.Figure:
     """
     Plot a scatter plot of the predicted vs. observed retention times.
@@ -42,15 +44,15 @@ def scatter(
         y=predicted_column,
         opacity=0.3,
     )
-    
+
     # Draw diagonal line
     fig.add_scatter(
         x=[min(df[observed_column]), max(df[observed_column])],
         y=[min(df[observed_column]), max(df[observed_column])],
-        mode='lines',
-        line=dict(color='red', width=3, dash='dash'),
+        mode="lines",
+        line=dict(color="red", width=3, dash="dash"),
     )
-    
+
     # Hide legend
     fig.update_layout(
         title=plot_title,
@@ -58,7 +60,7 @@ def scatter(
         xaxis_title=xaxis_label,
         yaxis_title=yaxis_label,
     )
-    
+
     return fig
 
 
@@ -85,9 +87,7 @@ def distribution_baseline(
     """
     # Get baseline data
     baseline_df = pd.read_csv(
-        Path(__file__)
-        .absolute()
-        .parent.joinpath("baseline_performance/baseline_predictions.csv")
+        Path(__file__).absolute().parent.joinpath("baseline_performance/baseline_predictions.csv")
     )
     baseline_df["rel_mae_best"] = baseline_df[
         ["rel_mae_transfer_learning", "rel_mae_new_model", "rel_mae_calibrate"]
@@ -97,12 +97,10 @@ def distribution_baseline(
     # Calculate current RMAE and percentile compared to baseline
     mae = sum(abs(df[observed_column] - df[predicted_column])) / len(df.index)
     mae_rel = (mae / max(df[observed_column])) * 100
-    percentile = round(
-        (baseline_df["rel_mae_transfer_learning"] < mae_rel).mean() * 100, 1
-    )
+    percentile = round((baseline_df["rel_mae_transfer_learning"] < mae_rel).mean() * 100, 1)
 
     # Calculate x-axis range with 5% padding
-    all_values = np.append(baseline_df["rel_mae_transfer_learning"].values, mae_rel)
+    all_values = np.append(baseline_df["rel_mae_transfer_learning"].to_numpy(), mae_rel)
     padding = (all_values.max() - all_values.min()) / 20  # 5% padding
     x_min = all_values.min() - padding
     x_max = all_values.max() + padding
@@ -140,10 +138,7 @@ def distribution_baseline(
     )
     fig.update_xaxes(range=[x_min, x_max])
     fig.update_layout(
-        title=(
-            f"Current DeepLC performance compared to {len(baseline_df.index)} "
-            "datasets"
-        ),
+        title=(f"Current DeepLC performance compared to {len(baseline_df.index)} datasets"),
         xaxis_title="Relative mean absolute error (%)",
     )
 
