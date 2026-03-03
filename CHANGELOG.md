@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Simplified the public package API by splitting up the single class-based API into core functions (`predict`, `finetune`, `train`, etc.)
+- Switched deep learning framework from Tensorflow to PyTorch
+- Speed up predictions by removing ensemble method where output from three models with differing kernel sizes was averaged to one prediction
+- Separated calibration logic to dedicated reusable module with sklearn-like API.
+- Built-in transfer learning functionality, instead of using external `deeplcretrainer` package.
+- Cleaned up package, removing legacy and unused code and files, and improving modularity
+- Modernized CI workflows to use `uv`
+- Added sphinx-based documentation for readthedocs
+
+### Removed
+
+- Removed library-feature for storing past predictions
+- Removed legacy CALLC functionality
+
 ## [3.1.8] - 2025-02-21
 
 ### Changed
@@ -41,7 +59,6 @@ and this project adheres to
 ### Changed
 
 - Bioconda fix import
-
 
 ## [3.1.2] - 2024-11-21
 

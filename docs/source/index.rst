@@ -17,6 +17,7 @@
 
    Readme <self>
    Contributing <contributing>
+   Changelog <changelog>
 
 
 .. toctree::
