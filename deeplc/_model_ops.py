@@ -19,17 +19,70 @@ logger = logging.getLogger(__name__)
 # TODO: Implement Lightning?
 
 
+def promote_buffers_to_parameters(
+    model: torch.nn.Module,
+    buffer_indices: list[int] | None = None,
+) -> torch.nn.Module:
+    """
+    Promote ONNX initializer buffers to nn.Parameters so they become trainable.
+
+    ONNX-converted GraphModules (from onnx2torch) store dense/FC layer weights as
+    buffers on an ``initializers`` submodule, making them invisible to the optimizer.
+    This function converts selected buffers to nn.Parameters so they can be fine-tuned.
+
+    Parameters
+    ----------
+    model
+        The loaded GraphModule from onnx2torch.
+    buffer_indices
+        Indices of ``onnx_initializer_*`` buffers to promote. If None, promotes the
+        global feature branch (0-5) and the final dense head (34-45).
+
+    Returns
+    -------
+    torch.nn.Module
+        The same model with buffers promoted to parameters.
+
+    """
+    if buffer_indices is None:
+        # Dense head (34-45) + global feature branch (0-5)
+        buffer_indices = list(range(0, 6)) + list(range(34, 46))
+
+    init_mod = dict(model.named_modules()).get("initializers")
+    if init_mod is None:
+        logger.debug("No 'initializers' submodule found; skipping buffer promotion.")
+        return model
+
+    promoted = 0
+    for idx in buffer_indices:
+        name = f"onnx_initializer_{idx}"
+        if name in init_mod._buffers:
+            buf = init_mod._buffers.pop(name)
+            init_mod._parameters[name] = torch.nn.Parameter(buf)
+            promoted += 1
+
+    logger.info(
+        f"Promoted {promoted} buffers to parameters. "
+        f"Total trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}"
+    )
+    return model
+
+
 def load_model(
     model: torch.nn.Module | PathLike | str | None = None,
     device: str | None = None,
 ) -> torch.nn.Module:
     """Load a model from a file or return a randomly initialized model if none is provided."""
     # If device is not specified, use the default device (GPU if available, else CPU)
-    selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    selected_device = device or torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     # Load model from file if a path is provided
     if isinstance(model, str | Path):
-        loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
+        loaded_model = torch.load(
+            model, weights_only=False, map_location=selected_device
+        )
     elif isinstance(model, torch.nn.Module):
         loaded_model = model
     elif model is None:
@@ -37,7 +90,9 @@ def load_model(
         loaded_model = DeepLCModel()
         logger.debug("Initialized new DeepLCModel with default architecture")
     else:
-        raise TypeError(f"Expected a PyTorch Module or a file path, got {type(model)} instead.")
+        raise TypeError(
+            f"Expected a PyTorch Module or a file path, got {type(model)} instead."
+        )
 
     # Ensure the model is on the specified device
     loaded_model.to(selected_device)
@@ -92,6 +147,11 @@ def train(
     """
     model = load_model(model, device)
 
+    # Promote ONNX initializer buffers (dense head) to trainable parameters
+    model = promote_buffers_to_parameters(model)
+
+    # Freeze layers if requested
+
     # Freeze layers if requested
     if trainable_layers is not None:
         _freeze_layers(model, trainable_layers)
@@ -102,7 +162,10 @@ def train(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
     )
     val_loader = DataLoader(
-        validation_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        validation_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
     )
 
     optimizer = _get_optimizer(model, learning_rate)
@@ -145,7 +208,9 @@ def predict(
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    data_loader = DataLoader(
+        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
+    )
     predictions = _predict_epoch(model, data_loader, device)
     return predictions.cpu().detach()
 
@@ -159,7 +224,9 @@ def evaluate(
 ) -> float:
     """Evaluate the model on the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    data_loader = DataLoader(
+        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
+    )
     loss_fn = torch.nn.L1Loss()
     avg_loss = _validate_epoch(model, data_loader, loss_fn, device)
     return avg_loss
@@ -171,7 +238,9 @@ def _freeze_layers(model: torch.nn.Module, unfreeze_keyword: str) -> None:
         param.requires_grad = unfreeze_keyword in name
 
 
-def _get_optimizer(model: torch.nn.Module, learning_rate: float) -> torch.optim.Optimizer:
+def _get_optimizer(
+    model: torch.nn.Module, learning_rate: float
+) -> torch.optim.Optimizer:
     return torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=learning_rate,
