@@ -1,5 +1,7 @@
 """Feature extraction for DeepLC."""
 
+# TODO: Consider ProForma fixed modifications (that are not applied yet) for feature extraction.
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +26,112 @@ DEFAULT_DICT_AA: dict[str, int] = {
 DEFAULT_DICT_INDEX_POS: dict[str, int] = {"C": 0, "H": 1, "N": 2, "O": 3, "S": 4, "P": 5}
 DEFAULT_DICT_INDEX: dict[str, int] = {"C": 0, "H": 1, "N": 2, "O": 3, "S": 4, "P": 5}
 # fmt: on
+
+
+def encode_peptidoform(
+    peptidoform: Peptidoform | str,
+    add_ccs_features: bool = False,
+    padding_length: int = 60,
+    positions: set[int] | None = None,
+    positions_pos: set[int] | None = None,
+    positions_neg: set[int] | None = None,
+    dict_aa: dict[str, int] | None = None,
+    dict_index_pos: dict[str, int] | None = None,
+    dict_index: dict[str, int] | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Extract features from a single peptidoform.
+
+    Parameters
+    ----------
+    peptidoform
+        The peptidoform to encode, either as a Peptidoform object or a string.
+    add_ccs_features
+        Whether to include CCS features. Default is False.
+    padding_length
+        The maximum length of the sequence after padding. Default is 60.
+    positions
+        The positions to consider for feature extraction. Default is DEFAULT_POSITIONS.
+    positions_pos
+        The positive positions to consider for feature extraction. Default is
+        DEFAULT_POSITIONS_POS.
+    positions_neg
+        The negative positions to consider for feature extraction. Default is
+        DEFAULT_POSITIONS_NEG.
+    dict_aa
+        A dictionary mapping amino acids to indices. Default is DEFAULT_DICT_AA.
+    dict_index_pos
+        A dictionary mapping atoms to indices for the positional matrix. Default is
+        DEFAULT_DICT_INDEX_POS.
+    dict_index
+        A dictionary mapping atoms to indices. Default is DEFAULT_DICT_INDEX.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        A dictionary of Numpy arrays containing the extracted features.
+
+    """
+    positions = positions or DEFAULT_POSITIONS
+    positions_pos = positions_pos or DEFAULT_POSITIONS_POS
+    positions_neg = positions_neg or DEFAULT_POSITIONS_NEG
+    dict_aa = dict_aa or DEFAULT_DICT_AA
+    dict_index_pos = dict_index_pos or DEFAULT_DICT_INDEX_POS
+    dict_index = dict_index or DEFAULT_DICT_INDEX
+
+    if isinstance(peptidoform, str):
+        peptidoform = Peptidoform(peptidoform)
+    seq = peptidoform.sequence
+    charge = peptidoform.precursor_charge
+    seq, seq_len = _truncate_sequence(seq, padding_length)
+
+    std_matrix = _fill_standard_matrix(seq, padding_length, dict_index)
+    onehot_matrix = _fill_onehot_matrix(peptidoform.parsed_sequence, padding_length, dict_aa)
+    pos_matrix = _fill_pos_matrix(
+        seq, seq_len, positions_pos, positions_neg, dict_index, dict_index_pos
+    )
+    _apply_modifications(
+        std_matrix,
+        pos_matrix,
+        peptidoform.parsed_sequence,
+        seq_len,
+        dict_index,
+        dict_index_pos,
+        positions,
+    )
+    _apply_terminal_modifications(
+        std_matrix,
+        pos_matrix,
+        peptidoform,
+        seq_len,
+        dict_index,
+        dict_index_pos,
+        positions,
+    )
+
+    matrix_all = np.sum(std_matrix, axis=0)
+    matrix_all = np.append(matrix_all, seq_len)
+    if add_ccs_features:
+        if not charge:
+            raise ValueError(f"Peptidoform has no charge: {peptidoform}")
+        matrix_all = np.append(matrix_all, (seq.count("H")) / seq_len)
+        matrix_all = np.append(
+            matrix_all, (seq.count("F") + seq.count("W") + seq.count("Y")) / seq_len
+        )
+        matrix_all = np.append(matrix_all, (seq.count("D") + seq.count("E")) / seq_len)
+        matrix_all = np.append(matrix_all, (seq.count("K") + seq.count("R")) / seq_len)
+        matrix_all = np.append(matrix_all, charge)
+
+    matrix_sum = _compute_rolling_sum(std_matrix.T, n=2)[:, ::2].T
+
+    matrix_global = np.concatenate([matrix_all, pos_matrix.flatten()])
+
+    return {
+        "matrix": std_matrix,
+        "matrix_sum": matrix_sum,
+        "matrix_global": matrix_global,
+        "matrix_hc": onehot_matrix,
+    }
 
 
 def _truncate_sequence(seq: str, max_length: int) -> tuple[str, int]:
@@ -207,109 +315,3 @@ def _compute_rolling_sum(matrix: np.ndarray, n: int = 2) -> np.ndarray:
     ret = np.cumsum(matrix, axis=1, dtype=np.float32)
     ret[:, n:] = ret[:, n:] - ret[:, :-n]
     return ret[:, n - 1 :]
-
-
-def encode_peptidoform(
-    peptidoform: Peptidoform | str,
-    add_ccs_features: bool = False,
-    padding_length: int = 60,
-    positions: set[int] | None = None,
-    positions_pos: set[int] | None = None,
-    positions_neg: set[int] | None = None,
-    dict_aa: dict[str, int] | None = None,
-    dict_index_pos: dict[str, int] | None = None,
-    dict_index: dict[str, int] | None = None,
-) -> dict[str, np.ndarray]:
-    """
-    Extract features from a single peptidoform.
-
-    Parameters
-    ----------
-    peptidoform
-        The peptidoform to encode, either as a Peptidoform object or a string.
-    add_ccs_features
-        Whether to include CCS features. Default is False.
-    padding_length
-        The maximum length of the sequence after padding. Default is 60.
-    positions
-        The positions to consider for feature extraction. Default is DEFAULT_POSITIONS.
-    positions_pos
-        The positive positions to consider for feature extraction. Default is
-        DEFAULT_POSITIONS_POS.
-    positions_neg
-        The negative positions to consider for feature extraction. Default is
-        DEFAULT_POSITIONS_NEG.
-    dict_aa
-        A dictionary mapping amino acids to indices. Default is DEFAULT_DICT_AA.
-    dict_index_pos
-        A dictionary mapping atoms to indices for the positional matrix. Default is
-        DEFAULT_DICT_INDEX_POS.
-    dict_index
-        A dictionary mapping atoms to indices. Default is DEFAULT_DICT_INDEX.
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        A dictionary of Numpy arrays containing the extracted features.
-
-    """
-    positions = positions or DEFAULT_POSITIONS
-    positions_pos = positions_pos or DEFAULT_POSITIONS_POS
-    positions_neg = positions_neg or DEFAULT_POSITIONS_NEG
-    dict_aa = dict_aa or DEFAULT_DICT_AA
-    dict_index_pos = dict_index_pos or DEFAULT_DICT_INDEX_POS
-    dict_index = dict_index or DEFAULT_DICT_INDEX
-
-    if isinstance(peptidoform, str):
-        peptidoform = Peptidoform(peptidoform)
-    seq = peptidoform.sequence
-    charge = peptidoform.precursor_charge
-    seq, seq_len = _truncate_sequence(seq, padding_length)
-
-    std_matrix = _fill_standard_matrix(seq, padding_length, dict_index)
-    onehot_matrix = _fill_onehot_matrix(peptidoform.parsed_sequence, padding_length, dict_aa)
-    pos_matrix = _fill_pos_matrix(
-        seq, seq_len, positions_pos, positions_neg, dict_index, dict_index_pos
-    )
-    _apply_modifications(
-        std_matrix,
-        pos_matrix,
-        peptidoform.parsed_sequence,
-        seq_len,
-        dict_index,
-        dict_index_pos,
-        positions,
-    )
-    _apply_terminal_modifications(
-        std_matrix,
-        pos_matrix,
-        peptidoform,
-        seq_len,
-        dict_index,
-        dict_index_pos,
-        positions,
-    )
-
-    matrix_all = np.sum(std_matrix, axis=0)
-    matrix_all = np.append(matrix_all, seq_len)
-    if add_ccs_features:
-        if not charge:
-            raise ValueError(f"Peptidoform has no charge: {peptidoform}")
-        matrix_all = np.append(matrix_all, (seq.count("H")) / seq_len)
-        matrix_all = np.append(
-            matrix_all, (seq.count("F") + seq.count("W") + seq.count("Y")) / seq_len
-        )
-        matrix_all = np.append(matrix_all, (seq.count("D") + seq.count("E")) / seq_len)
-        matrix_all = np.append(matrix_all, (seq.count("K") + seq.count("R")) / seq_len)
-        matrix_all = np.append(matrix_all, charge)
-
-    matrix_sum = _compute_rolling_sum(std_matrix.T, n=2)[:, ::2].T
-
-    matrix_global = np.concatenate([matrix_all, pos_matrix.flatten()])
-
-    return {
-        "matrix": std_matrix,
-        "matrix_sum": matrix_sum,
-        "matrix_global": matrix_global,
-        "matrix_hc": onehot_matrix,
-    }
