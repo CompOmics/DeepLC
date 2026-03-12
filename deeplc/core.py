@@ -131,7 +131,6 @@ def finetune_and_predict(
     psm_list: PSMList,
     psm_list_reference: PSMList,
     model: torch.nn.Module | PathLike | str | None = None,
-    calibration: Calibration | None = None,
     partial_freeze: bool = False,
     train_kwargs: dict | None = None,
     predict_kwargs: dict | None = None,
@@ -147,9 +146,6 @@ def finetune_and_predict(
         List of PSMs to use as reference for fine-tuning and calibration.
     model
         Trained model or path to model file.
-    calibration
-        Calibration instance to use. If already fitted, it will be re-fitted after fine-tuning
-        using the same options. If None, a simple PiecewiseLinearCalibration is used.
     partial_freeze
         If True, only the final layer of the model will be finetuned.
     train_kwargs
@@ -180,23 +176,13 @@ def finetune_and_predict(
     )
 
     # Fit calibration
-    # Validate passed calibration instance or create default if None
-    if calibration is None:
-        LOGGER.info("No calibration provided, using PiecewiseLinearCalibration by default.")
-        calibration = PiecewiseLinearCalibration()
-    elif not isinstance(calibration, Calibration):
-        raise ValueError(
-            f"Expected calibration to be of type Calibration, got {type(calibration)}"
-        )
-
-    # TODO: Is this necessary? Should it work equally well without calibration?
-    # Fit calibration if not already fitted
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
     if any(psm_list_reference["is_decoy"]):  #  remove this one since already in finetune?
         LOGGER.warning(
             "Reference PSM list contains decoy PSMs. "
             "These will be included in the calibration fitting."
         )
+    calibration = PiecewiseLinearCalibration()
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
     source_rt_cal = predict(
         psm_list=psm_list_reference,
@@ -253,7 +239,6 @@ def finetune(
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split
     )
-    LOGGER.info("Training new model...")
     finetuned_model = _model_ops.train(
         model=model or DEFAULT_MODEL,
         train_dataset=training_dataset,
