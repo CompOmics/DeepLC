@@ -98,6 +98,40 @@ def _fill_pos_matrix(
     return pos_mat
 
 
+def _apply_composition_to_matrices(
+    mat: np.ndarray,
+    pos_mat: np.ndarray,
+    composition: mass.Composition,
+    i: int,
+    seq_len: int,
+    dict_index: dict[str, int],
+    dict_index_pos: dict[str, int],
+    positions: set[int],
+) -> None:
+    """Apply a composition delta to the standard and positional matrices."""
+    for atom_comp, change in composition.items():
+        try:
+            mat[i, dict_index[atom_comp]] += change
+            if i in positions:
+                pos_mat[i, dict_index_pos[atom_comp]] += change
+            elif (i - seq_len) in positions:
+                pos_mat[i - seq_len, dict_index_pos[atom_comp]] += change
+        except KeyError:
+            try:
+                warnings.warn(f"Replacing pattern for atom: {atom_comp}", stacklevel=2)
+                atom_comp_clean = sub(r"\[.*?\]", "", atom_comp)
+                mat[i, dict_index[atom_comp_clean]] += change
+                if i in positions:
+                    pos_mat[i, dict_index_pos[atom_comp_clean]] += change
+                elif (i - seq_len) in positions:
+                    pos_mat[i - seq_len, dict_index_pos[atom_comp_clean]] += change
+            except KeyError:
+                warnings.warn(f"Ignoring atom {atom_comp} at pos {i}", stacklevel=2)
+                continue
+        except IndexError:
+            warnings.warn(f"Index error for atom {atom_comp} at pos {i}", stacklevel=2)
+
+
 def _apply_modifications(
     mat: np.ndarray,
     pos_mat: np.ndarray,
@@ -118,27 +152,54 @@ def _apply_modifications(
                 f"Skipping modification without known composition: {token[1]}", stacklevel=2
             )
             continue
-        for atom_comp, change in mod_comp.items():
+        _apply_composition_to_matrices(
+            mat,
+            pos_mat,
+            mod_comp,
+            i,
+            seq_len,
+            dict_index,
+            dict_index_pos,
+            positions,
+        )
+
+
+def _apply_terminal_modifications(
+    mat: np.ndarray,
+    pos_mat: np.ndarray,
+    peptidoform: Peptidoform,
+    seq_len: int,
+    dict_index: dict[str, int],
+    dict_index_pos: dict[str, int],
+    positions: set[int],
+) -> None:
+    """Apply N- and C-terminal modification changes to the matrices."""
+    terminal_mods = [
+        (0, peptidoform.properties.get("n_term")),  # N-terminus at position 0
+        (seq_len - 1, peptidoform.properties.get("c_term")),  # C-terminus at last position
+    ]
+    for i, mods in terminal_mods:
+        if not mods:
+            continue
+        for tag in mods:
             try:
-                mat[i, dict_index[atom_comp]] += change
-                if i in positions:
-                    pos_mat[i, dict_index_pos[atom_comp]] += change
-                elif (i - seq_len) in positions:
-                    pos_mat[i - seq_len, dict_index_pos[atom_comp]] += change
-            except KeyError:
-                try:
-                    warnings.warn(f"Replacing pattern for atom: {atom_comp}", stacklevel=2)
-                    atom_comp_clean = sub(r"\[.*?\]", "", atom_comp)
-                    mat[i, dict_index[atom_comp_clean]] += change
-                    if i in positions:
-                        pos_mat[i, dict_index_pos[atom_comp_clean]] += change
-                    elif (i - seq_len) in positions:
-                        pos_mat[i - seq_len, dict_index_pos[atom_comp_clean]] += change
-                except KeyError:
-                    warnings.warn(f"Ignoring atom {atom_comp} at pos {i}", stacklevel=2)
-                    continue
-            except IndexError:
-                warnings.warn(f"Index error for atom {atom_comp} at pos {i}", stacklevel=2)
+                mod_comp = tag.composition
+            except Exception:
+                warnings.warn(
+                    f"Skipping terminal modification without known composition: {tag}",
+                    stacklevel=2,
+                )
+                continue
+            _apply_composition_to_matrices(
+                mat,
+                pos_mat,
+                mod_comp,
+                i,
+                seq_len,
+                dict_index,
+                dict_index_pos,
+                positions,
+            )
 
 
 def _compute_rolling_sum(matrix: np.ndarray, n: int = 2) -> np.ndarray:
@@ -159,7 +220,39 @@ def encode_peptidoform(
     dict_index_pos: dict[str, int] | None = None,
     dict_index: dict[str, int] | None = None,
 ) -> dict[str, np.ndarray]:
-    """Extract features from a single peptidoform."""
+    """
+    Extract features from a single peptidoform.
+
+    Parameters
+    ----------
+    peptidoform
+        The peptidoform to encode, either as a Peptidoform object or a string.
+    add_ccs_features
+        Whether to include CCS features. Default is False.
+    padding_length
+        The maximum length of the sequence after padding. Default is 60.
+    positions
+        The positions to consider for feature extraction. Default is DEFAULT_POSITIONS.
+    positions_pos
+        The positive positions to consider for feature extraction. Default is
+        DEFAULT_POSITIONS_POS.
+    positions_neg
+        The negative positions to consider for feature extraction. Default is
+        DEFAULT_POSITIONS_NEG.
+    dict_aa
+        A dictionary mapping amino acids to indices. Default is DEFAULT_DICT_AA.
+    dict_index_pos
+        A dictionary mapping atoms to indices for the positional matrix. Default is
+        DEFAULT_DICT_INDEX_POS.
+    dict_index
+        A dictionary mapping atoms to indices. Default is DEFAULT_DICT_INDEX.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        A dictionary of Numpy arrays containing the extracted features.
+
+    """
     positions = positions or DEFAULT_POSITIONS
     positions_pos = positions_pos or DEFAULT_POSITIONS_POS
     positions_neg = positions_neg or DEFAULT_POSITIONS_NEG
@@ -182,6 +275,15 @@ def encode_peptidoform(
         std_matrix,
         pos_matrix,
         peptidoform.parsed_sequence,
+        seq_len,
+        dict_index,
+        dict_index_pos,
+        positions,
+    )
+    _apply_terminal_modifications(
+        std_matrix,
+        pos_matrix,
+        peptidoform,
         seq_len,
         dict_index,
         dict_index_pos,
