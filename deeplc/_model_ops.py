@@ -7,7 +7,14 @@ from os import PathLike
 from pathlib import Path
 
 import torch
-from rich.progress import track
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    track,
+)
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from deeplc._architecture import DeepLCModel
@@ -74,25 +81,20 @@ def load_model(
 ) -> torch.nn.Module:
     """Load a model from a file or return a randomly initialized model if none is provided."""
     # If device is not specified, use the default device (GPU if available, else CPU)
-    selected_device = device or torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load model from file if a path is provided
     if isinstance(model, str | Path):
-        loaded_model = torch.load(
-            model, weights_only=False, map_location=selected_device
-        )
+        loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
     elif isinstance(model, torch.nn.Module):
         loaded_model = model
+        logger.debug("Using provided PyTorch model instance")
     elif model is None:
         # Initialize a new model with default architecture
         loaded_model = DeepLCModel()
         logger.debug("Initialized new DeepLCModel with default architecture")
     else:
-        raise TypeError(
-            f"Expected a PyTorch Module or a file path, got {type(model)} instead."
-        )
+        raise TypeError(f"Expected a PyTorch Module or a file path, got {type(model)} instead.")
 
     # Ensure the model is on the specified device
     loaded_model.to(selected_device)
@@ -111,6 +113,7 @@ def train(
     batch_size: int = 512,
     patience: int = 10,
     trainable_layers: str | None = None,
+    show_progress: bool = True,
 ) -> torch.nn.Module:
     """
     Train or fine-tune the model.
@@ -138,6 +141,8 @@ def train(
     trainable_layers
         If provided, only layers containing this keyword in their name will be trainable.
         All other layers will be frozen. If None, all layers are trainable.
+    show_progress
+        If True, display a Rich progress bar during training. If False, run silently.
 
     Returns
     -------
@@ -149,8 +154,6 @@ def train(
 
     # Promote ONNX initializer buffers (dense head) to trainable parameters
     model = promote_buffers_to_parameters(model)
-
-    # Freeze layers if requested
 
     # Freeze layers if requested
     if trainable_layers is not None:
@@ -175,24 +178,28 @@ def train(
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
-    for epoch in range(epochs):
-        avg_loss = _train_epoch(model, train_loader, optimizer, loss_fn, device)
-        avg_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
+    with _create_progress(disable=not show_progress) as progress:
+        epoch_task = progress.add_task("Epochs", total=epochs, status="")
 
-        logger.debug(
-            f"Epoch {epoch + 1}/{epochs}, "
-            f"Loss: {avg_loss:.4f}, "
-            f"Validation Loss: {avg_val_loss:.4f}"
-        )
+        for _epoch in range(epochs):
+            avg_loss = _train_epoch(model, train_loader, optimizer, loss_fn, device)
+            avg_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_model_wts = copy.deepcopy(model.state_dict())
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
+            # Early stopping check
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_model_wts = copy.deepcopy(model.state_dict())
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+
+            # Update epoch bar with loss info
+            status = f"loss={avg_loss:.4f}  val_loss={avg_val_loss:.4f}  best={best_val_loss:.4f}"
             if epochs_no_improve >= patience:
-                logger.debug(f"Early stopping triggered at epoch {epoch + 1}")
+                status += "  [yellow]early stop[/yellow]"
+            progress.update(epoch_task, advance=1, status=status)
+
+            if epochs_no_improve >= patience:
                 break
 
     model.load_state_dict(best_model_wts)
@@ -208,10 +215,8 @@ def predict(
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(
-        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
-    predictions = _predict_epoch(model, data_loader, device)
+    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    predictions = _predict_epoch(model, data_loader, device, show_progress=True)
     return predictions.cpu().detach()
 
 
@@ -224,9 +229,7 @@ def evaluate(
 ) -> float:
     """Evaluate the model on the given dataset."""
     model = load_model(model, device)
-    data_loader = DataLoader(
-        data, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
+    data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     loss_fn = torch.nn.L1Loss()
     avg_loss = _validate_epoch(model, data_loader, loss_fn, device)
     return avg_loss
@@ -238,9 +241,7 @@ def _freeze_layers(model: torch.nn.Module, unfreeze_keyword: str) -> None:
         param.requires_grad = unfreeze_keyword in name
 
 
-def _get_optimizer(
-    model: torch.nn.Module, learning_rate: float
-) -> torch.optim.Optimizer:
+def _get_optimizer(model: torch.nn.Module, learning_rate: float) -> torch.optim.Optimizer:
     return torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=learning_rate,
@@ -257,7 +258,7 @@ def _train_epoch(
     """Train the model for one epoch."""
     model.train()
     running_loss = 0.0
-    for features, targets in track(data_loader):
+    for features, targets in data_loader:
         features = [feature_tensor.to(device) for feature_tensor in features]
         targets = targets.to(device).view(-1, 1)
         optimizer.zero_grad()
@@ -266,8 +267,7 @@ def _train_epoch(
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    avg_loss = float(running_loss / len(data_loader))
-    return avg_loss
+    return float(running_loss / len(data_loader))
 
 
 def _validate_epoch(
@@ -280,26 +280,42 @@ def _validate_epoch(
     model.eval()
     val_loss = 0.0
     with torch.no_grad():
-        for features, targets in track(data_loader):
+        for features, targets in data_loader:
             features = [feature_tensor.to(device) for feature_tensor in features]
             targets = targets.to(device).view(-1, 1)
             outputs = model(*features)
             val_loss += loss_fn(outputs, targets).item()
-    avg_val_loss = float(val_loss / len(data_loader))
-    return avg_val_loss
+    return float(val_loss / len(data_loader))
 
 
 def _predict_epoch(
     model: torch.nn.Module,
     data_loader: DataLoader,
     device: str,
+    show_progress: bool = False,
 ) -> torch.Tensor:
     """Predict using the model for one epoch."""
     model.eval()
     predictions = []
     with torch.no_grad():
-        for features, _ in track(data_loader):
+        for features, _ in track(
+            data_loader, description="Predicting...", transient=True, disable=not show_progress
+        ):
             features = [feature_tensor.to(device) for feature_tensor in features]
             outputs = model(*features)
             predictions.append(outputs.cpu())
     return torch.cat(predictions, dim=0).squeeze()
+
+
+def _create_progress(disable: bool = False) -> Progress:
+    """Create a Rich progress bar for training."""
+    return Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("|"),
+        TimeRemainingColumn(),
+        TextColumn("|"),
+        TextColumn("{task.fields[status]}"),
+        disable=disable,
+    )
