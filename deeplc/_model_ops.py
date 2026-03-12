@@ -68,7 +68,7 @@ def promote_buffers_to_parameters(
             init_mod._parameters[name] = torch.nn.Parameter(buf)
             promoted += 1
 
-    logger.info(
+    logger.debug(
         f"Promoted {promoted} buffers to parameters. "
         f"Total trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}"
     )
@@ -112,7 +112,6 @@ def train(
     epochs: int = 25,
     batch_size: int = 512,
     patience: int = 10,
-    trainable_layers: str | None = None,
     show_progress: bool = True,
 ) -> torch.nn.Module:
     """
@@ -138,9 +137,6 @@ def train(
         Batch size for training and validation.
     patience
         Number of epochs with no improvement before early stopping.
-    trainable_layers
-        If provided, only layers containing this keyword in their name will be trainable.
-        All other layers will be frozen. If None, all layers are trainable.
     show_progress
         If True, display a Rich progress bar during training. If False, run silently.
 
@@ -155,10 +151,6 @@ def train(
     # Promote ONNX initializer buffers (dense head) to trainable parameters
     model = promote_buffers_to_parameters(model)
 
-    # Freeze layers if requested
-    if trainable_layers is not None:
-        _freeze_layers(model, trainable_layers)
-        logger.debug(f"Frozen all layers except those containing '{trainable_layers}'")
 
     # Parse datasets; setup loaders
     train_loader = DataLoader(
@@ -233,12 +225,6 @@ def evaluate(
     loss_fn = torch.nn.L1Loss()
     avg_loss = _validate_epoch(model, data_loader, loss_fn, device)
     return avg_loss
-
-
-def _freeze_layers(model: torch.nn.Module, unfreeze_keyword: str) -> None:
-    """Freeze all layers except those containing the unfreeze_keyword in their name."""
-    for name, param in model.named_parameters():
-        param.requires_grad = unfreeze_keyword in name
 
 
 def _get_optimizer(model: torch.nn.Module, learning_rate: float) -> torch.optim.Optimizer:

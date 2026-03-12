@@ -131,7 +131,6 @@ def finetune_and_predict(
     psm_list: PSMList,
     psm_list_reference: PSMList,
     model: torch.nn.Module | PathLike | str | None = None,
-    partial_freeze: bool = False,
     train_kwargs: dict | None = None,
     predict_kwargs: dict | None = None,
 ) -> np.ndarray:
@@ -146,8 +145,6 @@ def finetune_and_predict(
         List of PSMs to use as reference for fine-tuning and calibration.
     model
         Trained model or path to model file.
-    partial_freeze
-        If True, only the final layer of the model will be finetuned.
     train_kwargs
         Additional keyword arguments to pass to the training function.
     predict_kwargs
@@ -163,7 +160,6 @@ def finetune_and_predict(
     finetuned_model = finetune(
         psm_list=psm_list_reference,
         model=model,
-        partial_freeze=partial_freeze,
         train_kwargs=train_kwargs,
     )
 
@@ -177,7 +173,7 @@ def finetune_and_predict(
 
     # Fit calibration
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
-    if any(psm_list_reference["is_decoy"]):  #  remove this one since already in finetune?
+    if any(psm_list_reference["is_decoy"]):  #  TODO: remove this one since already in finetune?
         LOGGER.warning(
             "Reference PSM list contains decoy PSMs. "
             "These will be included in the calibration fitting."
@@ -202,7 +198,6 @@ def finetune(
     psm_list_validation: PSMList | None = None,
     validation_split: float = 0.1,
     model: torch.nn.Module | PathLike | str | None = None,
-    partial_freeze: bool = False,
     train_kwargs: dict | None = None,
 ) -> torch.nn.Module:
     """
@@ -217,8 +212,6 @@ def finetune(
         used.
     model
         Trained model or path to model file.
-    partial_freeze
-        If True, only the final layer of the model will be finetuned.
     train_kwargs
         Additional keyword arguments to pass to the training function.
 
@@ -243,7 +236,6 @@ def finetune(
         model=model or DEFAULT_MODEL,
         train_dataset=training_dataset,
         validation_dataset=validation_dataset,
-        trainable_layers="33_1" if partial_freeze else None,  # TODO: Don't hardcode
         **(train_kwargs or {}),
     )
     return finetuned_model
