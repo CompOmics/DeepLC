@@ -56,6 +56,67 @@ def predict(
     ).numpy()
 
 
+def calibrate(
+    psm_list_reference: PSMList,
+    model: torch.nn.Module | PathLike | str | None = None,
+    calibration: Calibration | None = None,
+    predict_kwargs: dict | None = None,
+) -> Calibration:
+    """
+    Return a `Calibration` instance fitted to the reference dataset.
+
+    Parameters
+    ----------
+    psm_list_reference
+        List of PSMs to use as reference for calibration.
+    model
+        Trained model or path to model file.
+    calibration
+        Calibration instance to use. If None, SplineTransformerCalibration is used.
+    predict_kwargs
+        Additional keyword arguments to pass to the prediction function.
+
+    Returns
+    -------
+    Calibration
+        Fitted calibration instance.
+
+    """
+    # Get calibration
+    if calibration is None:
+        LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
+        calibration = SplineTransformerCalibration()
+    elif not isinstance(calibration, Calibration):
+        raise ValueError(
+            f"Expected calibration to be of type `Calibration`, got {type(calibration)}"
+        )
+    if calibration.is_fitted:
+        LOGGER.warning(
+            "Provided Calibration is already fitted. Refitting will overwrite existing fit."
+        )
+
+    if any(psm_list_reference["is_decoy"]):
+        LOGGER.warning(
+            "Reference PSM list contains decoy PSMs. "
+            "These will be included in the calibration fitting."
+        )
+
+    # Predict initial retention times for the reference dataset
+    LOGGER.info("Predicting retention times for reference...")
+    source_rt_cal = predict(
+        psm_list=psm_list_reference,
+        model=model,
+        predict_kwargs=predict_kwargs,
+    )
+
+    # Fit calibration
+    LOGGER.info("Fitting calibration...")
+    target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
+    calibration.fit(target=target_rt_cal, source=source_rt_cal)
+
+    return calibration
+
+
 def predict_and_calibrate(
     psm_list: PSMList,
     psm_list_reference: PSMList,
@@ -93,31 +154,19 @@ def predict_and_calibrate(
         predict_kwargs=predict_kwargs,
     )
 
-    # Fit calibration
-    # Validate passed calibration instance or create default if None
-    if calibration is None:
-        LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
-        calibration = SplineTransformerCalibration()
-    elif not isinstance(calibration, Calibration):
+    if calibration is not None and not isinstance(calibration, Calibration):
         raise ValueError(
-            f"Expected calibration to be of type Calibration, got {type(calibration)}"
+            f"Expected calibration to be of type `Calibration`, got {type(calibration)}"
         )
 
     # Fit calibration if not already fitted
-    if not calibration.is_fitted:
-        LOGGER.info("Fitting calibration...")
-        if any(psm_list_reference["is_decoy"]):
-            LOGGER.warning(
-                "Reference PSM list contains decoy PSMs. "
-                "These will be included in the calibration fitting."
-            )
-        target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
-        source_rt_cal = predict(
-            psm_list=psm_list_reference,
+    if calibration is None or not calibration.is_fitted:
+        calibration = calibrate(
+            psm_list_reference=psm_list_reference,
             model=model,
+            calibration=calibration,
             predict_kwargs=predict_kwargs,
         )
-        calibration.fit(target=target_rt_cal, source=source_rt_cal)
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
 
@@ -171,21 +220,14 @@ def finetune_and_predict(
         predict_kwargs=predict_kwargs,
     )
 
-    # Fit calibration
+    # Fit calibration with simple PiecewiseLinearCalibration to the fine-tuned model predictions
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
-    if any(psm_list_reference["is_decoy"]):  #  TODO: remove this one since already in finetune?
-        LOGGER.warning(
-            "Reference PSM list contains decoy PSMs. "
-            "These will be included in the calibration fitting."
-        )
-    calibration = PiecewiseLinearCalibration()
-    target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
-    source_rt_cal = predict(
-        psm_list=psm_list_reference,
+    calibration = calibrate(
+        psm_list_reference=psm_list_reference,
         model=finetuned_model,
+        calibration=PiecewiseLinearCalibration(),
         predict_kwargs=predict_kwargs,
     )
-    calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
     # Apply calibration to predictions
     calibrated_rt = calibration.transform(predicted_rt)
