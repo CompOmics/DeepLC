@@ -151,7 +151,6 @@ def train(
     # Promote ONNX initializer buffers (dense head) to trainable parameters
     model = promote_buffers_to_parameters(model)
 
-
     # Parse datasets; setup loaders
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
@@ -304,4 +303,5 @@ def _create_progress(disable: bool = False) -> Progress:
         TextColumn("|"),
         TextColumn("{task.fields[status]}"),
         disable=disable,
+        transient=True,
     )

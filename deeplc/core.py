@@ -48,7 +48,6 @@ def predict(
         Retention time predictions.
 
     """
-    LOGGER.info("Predicting retention times...")
     return _model_ops.predict(
         model=model or DEFAULT_MODEL,
         data=DeepLCDataset.from_psm_list(psm_list),
@@ -102,7 +101,7 @@ def calibrate(
         )
 
     # Predict initial retention times for the reference dataset
-    LOGGER.info("Predicting retention times for reference...")
+    LOGGER.debug("Predicting retention times for reference...")
     source_rt_cal = predict(
         psm_list=psm_list_reference,
         model=model,
@@ -110,7 +109,7 @@ def calibrate(
     )
 
     # Fit calibration
-    LOGGER.info("Fitting calibration...")
+    LOGGER.debug("Fitting calibration...")
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
     calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
