@@ -23,58 +23,6 @@ from deeplc.data import DeepLCDataset
 logger = logging.getLogger(__name__)
 
 
-# TODO: Implement Lightning?
-
-
-def promote_buffers_to_parameters(
-    model: torch.nn.Module,
-    buffer_indices: list[int] | None = None,
-) -> torch.nn.Module:
-    """
-    Promote ONNX initializer buffers to nn.Parameters so they become trainable.
-
-    ONNX-converted GraphModules (from onnx2torch) store dense/FC layer weights as
-    buffers on an ``initializers`` submodule, making them invisible to the optimizer.
-    This function converts selected buffers to nn.Parameters so they can be fine-tuned.
-
-    Parameters
-    ----------
-    model
-        The loaded GraphModule from onnx2torch.
-    buffer_indices
-        Indices of ``onnx_initializer_*`` buffers to promote. If None, promotes the
-        global feature branch (0-5) and the final dense head (34-45).
-
-    Returns
-    -------
-    torch.nn.Module
-        The same model with buffers promoted to parameters.
-
-    """
-    if buffer_indices is None:
-        # Dense head (34-45) + global feature branch (0-5)
-        buffer_indices = list(range(0, 6)) + list(range(34, 46))
-
-    init_mod = dict(model.named_modules()).get("initializers")
-    if init_mod is None:
-        logger.debug("No 'initializers' submodule found; skipping buffer promotion.")
-        return model
-
-    promoted = 0
-    for idx in buffer_indices:
-        name = f"onnx_initializer_{idx}"
-        if name in init_mod._buffers:
-            buf = init_mod._buffers.pop(name)
-            init_mod._parameters[name] = torch.nn.Parameter(buf)
-            promoted += 1
-
-    logger.debug(
-        f"Promoted {promoted} buffers to parameters. "
-        f"Total trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}"
-    )
-    return model
-
-
 def load_model(
     model: torch.nn.Module | PathLike | str | None = None,
     device: str | None = None,
@@ -147,9 +95,6 @@ def train(
 
     """
     model = load_model(model, device)
-
-    # Promote ONNX initializer buffers (dense head) to trainable parameters
-    model = promote_buffers_to_parameters(model)
 
     # Parse datasets; setup loaders
     train_loader = DataLoader(
