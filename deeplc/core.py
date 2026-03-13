@@ -224,7 +224,6 @@ def finetune_and_predict(
     calibration = calibrate(
         psm_list_reference=psm_list_reference,
         model=finetuned_model,
-        calibration=PiecewiseLinearCalibration(),
         predict_kwargs=predict_kwargs,
     )
 
