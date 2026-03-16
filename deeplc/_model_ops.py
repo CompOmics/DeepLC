@@ -148,11 +148,12 @@ def predict(
     device: str = "cpu",
     batch_size: int = 512,
     num_workers: int = 0,
+    show_progress: bool = True,
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
     model = load_model(model, device)
     data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    predictions = _predict_epoch(model, data_loader, device, show_progress=True)
+    predictions = _predict_epoch(model, data_loader, device, show_progress=show_progress)
     return predictions.cpu().detach()
 
 
