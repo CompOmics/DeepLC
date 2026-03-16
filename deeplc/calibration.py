@@ -57,10 +57,10 @@ class IdentityCalibration(Calibration):
 class PiecewiseLinearCalibration(Calibration):
     def __init__(
         self,
-        number_of_splits: int = 20,
+        number_of_splits: int = 10,
         extrapolate: bool = True,
         use_median: bool = False,
-        min_samples_per_segment: int = 10,
+        min_samples_per_segment: int = 20,
     ) -> None:
         """
         Piece-wise linear calibration based on per-split anchors.
@@ -123,14 +123,20 @@ class PiecewiseLinearCalibration(Calibration):
             raise CalibrationError("Source values have zero or invalid range; cannot calibrate.")
 
         boundaries = np.linspace(cal_min, cal_max, self.number_of_splits + 1, dtype=np.float32)
-        starts: np.ndarray = np.searchsorted(source, boundaries[:-1], side="left")  # type: ignore[var-annotated]
-        ends: np.ndarray = np.searchsorted(source, boundaries[1:], side="left")  # type: ignore[var-annotated]
+        starts_raw: np.ndarray = np.searchsorted(source, boundaries[:-1], side="left")  # type: ignore[var-annotated]
+        ends_raw: np.ndarray = np.searchsorted(source, boundaries[1:], side="left")  # type: ignore[var-annotated]
 
-        # Filter out sparse segments
-        counts = ends - starts
-        valid_segments = counts >= self.min_samples_per_segment
-        starts = starts[valid_segments]
-        ends = ends[valid_segments]
+        # Merge adjacent sparse segments by assigning each segment to a group based on
+        # how many min_samples-sized chunks the cumulative count has crossed so far.
+        # Segments whose cumulative count falls within the same chunk share a group id
+        # and are merged into a single anchor.
+        counts = ends_raw - starts_raw
+        group_ids = (np.cumsum(counts) - 1) // self.min_samples_per_segment
+        group_start_indices = np.concatenate(([0], np.flatnonzero(np.diff(group_ids)) + 1))
+        group_end_indices = np.concatenate((group_start_indices[1:] - 1, [len(starts_raw) - 1]))
+
+        starts = starts_raw[group_start_indices]
+        ends = ends_raw[group_end_indices]
 
         # Compute anchors for all segments
         aggregate_func = np.median if self.use_median else np.mean
