@@ -13,7 +13,6 @@ from psm_utils.psm_list import PSMList
 from deeplc import _model_ops
 from deeplc.calibration import (
     Calibration,
-    PiecewiseLinearCalibration,
     SplineTransformerCalibration,
 )
 from deeplc.data import DeepLCDataset, split_datasets
