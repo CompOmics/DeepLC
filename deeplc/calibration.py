@@ -57,9 +57,10 @@ class IdentityCalibration(Calibration):
 class PiecewiseLinearCalibration(Calibration):
     def __init__(
         self,
-        number_of_splits: int = 50,
+        number_of_splits: int = 10,
         extrapolate: bool = True,
-        use_median: bool = True,
+        use_median: bool = False,
+        min_samples_per_segment: int = 20,
     ) -> None:
         """
         Piece-wise linear calibration based on per-split anchors.
@@ -74,11 +75,19 @@ class PiecewiseLinearCalibration(Calibration):
             If False, clips input values to the fitted range.
         use_median : bool
             If True, uses the median of each segment to define anchors. If False, uses the mean.
+        min_samples_per_segment : int
+            Minimum number of samples required for a segment to contribute an anchor.
+            Segments with fewer samples are skipped, which helps avoid unstable anchors in
+            sparse regions when using many splits.
         """
         super().__init__()
         self.number_of_splits = int(number_of_splits)
         self.extrapolate = bool(extrapolate)
         self.use_median = bool(use_median)
+        self.min_samples_per_segment = int(min_samples_per_segment)
+
+        if self.min_samples_per_segment < 1:
+            raise ValueError("`min_samples_per_segment` must be >= 1.")
 
         self._calibrate_min: float | None = None
         self._calibrate_max: float | None = None
@@ -114,13 +123,20 @@ class PiecewiseLinearCalibration(Calibration):
             raise CalibrationError("Source values have zero or invalid range; cannot calibrate.")
 
         boundaries = np.linspace(cal_min, cal_max, self.number_of_splits + 1, dtype=np.float32)
-        starts: np.ndarray = np.searchsorted(source, boundaries[:-1], side="left")  # type: ignore[var-annotated]
-        ends: np.ndarray = np.searchsorted(source, boundaries[1:], side="left")  # type: ignore[var-annotated]
+        starts_raw: np.ndarray = np.searchsorted(source, boundaries[:-1], side="left")  # type: ignore[var-annotated]
+        ends_raw: np.ndarray = np.searchsorted(source, boundaries[1:], side="left")  # type: ignore[var-annotated]
 
-        # Filter out empty segments
-        valid_segments = ends > starts
-        starts = starts[valid_segments]
-        ends = ends[valid_segments]
+        # Merge adjacent sparse segments by assigning each segment to a group based on
+        # how many min_samples-sized chunks the cumulative count has crossed so far.
+        # Segments whose cumulative count falls within the same chunk share a group id
+        # and are merged into a single anchor.
+        counts = ends_raw - starts_raw
+        group_ids = (np.cumsum(counts) - 1) // self.min_samples_per_segment
+        group_start_indices = np.concatenate(([0], np.flatnonzero(np.diff(group_ids)) + 1))
+        group_end_indices = np.concatenate((group_start_indices[1:] - 1, [len(starts_raw) - 1]))
+
+        starts = starts_raw[group_start_indices]
+        ends = ends_raw[group_end_indices]
 
         # Compute anchors for all segments
         aggregate_func = np.median if self.use_median else np.mean
@@ -234,33 +250,27 @@ class SplineTransformerCalibration(Calibration):
         self,
         target: np.ndarray,
         source: np.ndarray,
-        simplified: bool = False,
     ) -> None:
         """Fit a spline-based model mapping source to target values."""
         target, source = _prepare_series(target, source)
 
-        # TODO: What's the use of `simplified`? Was taken from original code.
-        if simplified:
-            linear_model = LinearRegression()
-            linear_model.fit(source.reshape(-1, 1), target)
-            linear_model_left = linear_model
-            spline_model = linear_model
-            linear_model_right = linear_model
-        else:
-            spline = SplineTransformer(degree=4, n_knots=int(len(source) / 500) + 5)
-            spline_model = make_pipeline(spline, LinearRegression())
-            spline_model.fit(source.reshape(-1, 1), target)
+        # Spline model
+        spline = SplineTransformer(degree=4, n_knots=int(len(source) / 500) + 5)
+        spline_model = make_pipeline(spline, LinearRegression())
+        spline_model.fit(source.reshape(-1, 1), target)
 
-            n_top = int(len(source) * 0.1)
-            X_left = source[:n_top]
-            y_left = target[:n_top]
-            linear_model_left = LinearRegression()
-            linear_model_left.fit(X_left.reshape(-1, 1), y_left)
+        # Linear fit for left trail
+        n_top = int(len(source) * 0.1)
+        X_left = source[:n_top]
+        y_left = target[:n_top]
+        linear_model_left = LinearRegression()
+        linear_model_left.fit(X_left.reshape(-1, 1), y_left)
 
-            X_right = source[-n_top:]
-            y_right = target[-n_top:]
-            linear_model_right = LinearRegression()
-            linear_model_right.fit(X_right.reshape(-1, 1), y_right)
+        # Linear fit for right trail
+        X_right = source[-n_top:]
+        y_right = target[-n_top:]
+        linear_model_right = LinearRegression()
+        linear_model_right.fit(X_right.reshape(-1, 1), y_right)
 
         self._calibrate_min = float(np.min(source))
         self._calibrate_max = float(np.max(source))

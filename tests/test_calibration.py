@@ -77,3 +77,27 @@ def test_zero_range_predicted_raises():
     cal = PiecewiseLinearCalibration(number_of_splits=10)
     with pytest.raises(CalibrationError):
         cal.fit(target=y, source=x)
+
+
+def test_piecewise_skips_sparse_segments_with_min_samples_threshold():
+    source_dense = np.linspace(0.0, 80.0, 1000, dtype=np.float32)
+    source_sparse = np.array([95.0, 97.0, 99.0], dtype=np.float32)
+    source = np.concatenate([source_dense, source_sparse]).astype(np.float32)
+    target = (1.2 * source) + 3.0
+
+    cal_no_threshold = PiecewiseLinearCalibration(
+        number_of_splits=100,
+        min_samples_per_segment=1,
+    )
+    cal_no_threshold.fit(target=target, source=source)
+    x_no_threshold, _ = cal_no_threshold.get_calibration_curve()
+
+    cal_threshold = PiecewiseLinearCalibration(
+        number_of_splits=100,
+        min_samples_per_segment=10,
+    )
+    cal_threshold.fit(target=target, source=source)
+    x_threshold, _ = cal_threshold.get_calibration_curve()
+
+    assert x_threshold.size > 1
+    assert x_threshold.size < x_no_threshold.size
