@@ -75,24 +75,37 @@ def cli(logging_level, **kwargs):
 @cli.command()
 @click.argument("psms", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option(
-    "--psm-filetype", "-t", type=click.Choice(PSM_FILETYPES), default=None,
+    "--psm-filetype",
+    "-t",
+    type=click.Choice(PSM_FILETYPES),
+    default=None,
     help="File type for the input PSM file. Inferred from extension if not provided.",
 )
 @click.option(
-    "--reference", type=click.Path(exists=True, dir_okay=False), default=None,
+    "--reference",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
     help="Reference PSM file for calibration or fine-tuning.",
 )
 @click.option(
-    "--reference-filetype", "-r", type=click.Choice(PSM_FILETYPES), default=None,
+    "--reference-filetype",
+    "-r",
+    type=click.Choice(PSM_FILETYPES),
+    default=None,
     help="File type for the reference file. Inferred from extension if not provided.",
 )
 @click.option(
-    "--finetune", is_flag=True, default=False,
+    "--finetune",
+    is_flag=True,
+    default=False,
     help="Fine-tune the model to the reference before predicting. Requires --reference.",
 )
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
 @click.option(
-    "--model", "-m", type=click.Path(exists=True, dir_okay=False), default=None,
+    "--model",
+    "-m",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
     help="Path to a model file. Uses the built-in default model if not provided.",
 )
 def predict(psms, psm_filetype, reference, reference_filetype, finetune, output, model):
