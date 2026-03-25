@@ -1,17 +1,20 @@
 [project]
 name = "deeplc"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.2"
 description = "DeepLC: Retention time prediction for (modified) peptides using Deep Learning."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
     { name = "Robbin Bouwmeester", email = "robbin.bouwmeester@ugent.be" },
-    { name = "Niels Hulstaert" },
-    { name = "Arthur Declercq" },
     { name = "Ralf Gabriels" },
+    { name = "Kevin Velghe" },
+    { name = "Robbe Devreese"},
+    { name = "Arthur Declercq" },
     { name = "Alireza Nameni" },
-    { name = "Lennart Martens" },
+    { name = "Ralf Gabriels" },
+    { name = "Niels Hulstaert" },
     { name = "Sven Degroeve" },
+    { name = "Lennart Martens" },
 ]
 classifiers = [
     "Intended Audience :: Science/Research",
