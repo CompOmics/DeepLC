@@ -74,7 +74,7 @@ class DeepLCDataset(Dataset):
         targets = (
             self.target_retention_times[idx]
             if self.target_retention_times is not None
-            else torch.full_like(feature_tuples[0], fill_value=float("nan"), dtype=torch.float32)
+            else torch.tensor(float("nan"), dtype=torch.float32)
         )
         return feature_tuples, targets
 
@@ -160,10 +160,19 @@ def split_datasets(
     """
     # TODO: Implement stratified splitting based on stripped sequence
     if validation_data is None:
+        if not 0 < validation_split < 1:
+            raise ValueError(
+                f"validation_split must be between 0 and 1 (exclusive), got {validation_split}."
+            )
         if not hasattr(train_data, "__len__"):
             raise ValueError("Dataset must implement __len__ method for automatic splitting")
         dataset_len = len(train_data)  # type: ignore[arg-type]
-        val_size = int(dataset_len * validation_split)
+        if dataset_len < 2:
+            raise ValueError(
+                "Need at least 2 samples in train_data when validation_data is not provided."
+            )
+        val_size = max(1, int(dataset_len * validation_split))
+        val_size = min(val_size, dataset_len - 1)
         train_size = dataset_len - val_size
         train_dataset, val_dataset = torch.utils.data.random_split(
             train_data, [train_size, val_size]

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from psm_utils.psm_list import PSMList
+from psm_utils import PSM, Peptidoform, PSMList
 
 from deeplc import _model_ops
 from deeplc.calibration import (
@@ -25,7 +25,7 @@ DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / DEFAULT_MODEL_NAME
 
 
 def predict(
-    psm_list: PSMList,
+    psm_list: PSMList | list[PSM | Peptidoform | str],
     model: torch.nn.Module | PathLike | str | None = None,
     predict_kwargs: dict | None = None,
 ) -> np.ndarray:
@@ -49,7 +49,7 @@ def predict(
     """
     return _model_ops.predict(
         model=model or DEFAULT_MODEL,
-        data=DeepLCDataset.from_psm_list(psm_list),
+        data=DeepLCDataset.from_psm_list(_parse_psms(psm_list)),
         **(predict_kwargs or {}),
     ).numpy()
 
@@ -116,7 +116,7 @@ def calibrate(
 
 
 def predict_and_calibrate(
-    psm_list: PSMList,
+    psm_list: PSMList | list[PSM | Peptidoform | str],
     psm_list_reference: PSMList,
     model: torch.nn.Module | PathLike | str | None = None,
     calibration: Calibration | None = None,
@@ -147,7 +147,7 @@ def predict_and_calibrate(
     # Predict initial retention times
     LOGGER.info("Predicting retention times...")
     predicted_rt = predict(
-        psm_list=psm_list,
+        psm_list=_parse_psms(psm_list),
         model=model,
         predict_kwargs=predict_kwargs,
     )
@@ -175,7 +175,7 @@ def predict_and_calibrate(
 
 
 def finetune_and_predict(
-    psm_list: PSMList,
+    psm_list: PSMList | list[PSM | Peptidoform | str],
     psm_list_reference: PSMList,
     model: torch.nn.Module | PathLike | str | None = None,
     train_kwargs: dict | None = None,
@@ -205,7 +205,7 @@ def finetune_and_predict(
     """
     # Fine-tune the model
     finetuned_model = finetune(
-        psm_list=psm_list_reference,
+        psm_list_reference=psm_list_reference,
         model=model,
         train_kwargs=train_kwargs,
     )
@@ -213,7 +213,7 @@ def finetune_and_predict(
     # Predict retention times with fine-tuned model
     LOGGER.info("Predicting retention times with fine-tuned model...")
     predicted_rt = predict(
-        psm_list=psm_list,
+        psm_list=_parse_psms(psm_list),
         model=finetuned_model,
         predict_kwargs=predict_kwargs,
     )
@@ -233,7 +233,7 @@ def finetune_and_predict(
 
 
 def finetune(
-    psm_list: PSMList,
+    psm_list_reference: PSMList,
     psm_list_validation: PSMList | None = None,
     validation_split: float = 0.1,
     model: torch.nn.Module | PathLike | str | None = None,
@@ -244,7 +244,7 @@ def finetune(
 
     Parameters
     ----------
-    psm_list
+    psm_list_reference
         List of PSMs to use as reference for fine-tuning.
     psm_list_validation
         List of PSMs to use for validation during fine-tuning. If None, a split from psm_list is
@@ -261,10 +261,10 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
-    if any(psm_list["is_decoy"]):
+    if any(psm_list_reference["is_decoy"]):
         # TODO: Move to reusable validation step?
         LOGGER.warning("PSM list contains decoy PSMs. These will be used for fine tuning.")
-    training_data = DeepLCDataset.from_psm_list(psm_list)
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
     validation_data = (
         DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
     )
@@ -281,7 +281,7 @@ def finetune(
 
 
 def train(
-    psm_list: PSMList,
+    psm_list_reference: PSMList,
     psm_list_validation: PSMList | None = None,
     validation_split: float = 0.1,
     train_kwargs: dict | None = None,
@@ -291,8 +291,8 @@ def train(
 
     Parameters
     ----------
-    psm_list
-        List of PSMs to use for training.
+    psm_list_reference
+        List of PSMs to use as reference for fine-tuning.
     psm_list_validation
         List of PSMs to use for validation. If None, a split from psm_list is used.
     validation_split
@@ -306,7 +306,7 @@ def train(
         Trained model.
 
     """
-    training_data = DeepLCDataset.from_psm_list(psm_list)
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
     validation_data = (
         DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
     )
@@ -321,3 +321,29 @@ def train(
         **(train_kwargs or {}),
     )
     return trained_model
+
+
+def _parse_psms(psm_list: PSMList | list[PSM | Peptidoform | str]) -> PSMList:
+    """
+    Parse a list of PSMs, Peptidoforms, or strings into a PSMList.
+
+    Note that this function can only be used for inputs that do not require additional data,
+    such as retention times or decoy status. It cannot be used for reference or validation
+    data sets that require observed retention times for calibration or training.
+
+    """
+    if isinstance(psm_list, PSMList):
+        return psm_list
+    elif isinstance(psm_list, list):
+        if all(isinstance(psm, PSM) for psm in psm_list):
+            return PSMList(psm_list=psm_list)
+        elif all(isinstance(psm, Peptidoform) for psm in psm_list) or all(
+            isinstance(psm, str) for psm in psm_list
+        ):
+            return PSMList(
+                psm_list=[PSM(spectrum_id=i, peptidoform=pf) for i, pf in enumerate(psm_list)]
+            )
+        else:
+            raise ValueError("List must contain either PSMs, Peptidoforms, or strings.")
+    else:
+        raise ValueError("Input must be a PSMList or a list of PSMs, Peptidoforms, or strings.")
