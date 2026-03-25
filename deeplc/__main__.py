@@ -7,7 +7,6 @@ import click
 import pandas as pd
 from psm_utils.io import READERS, read_file
 from rich.logging import RichHandler
-from rich.traceback import install as install_rich_traceback
 
 import deeplc.core
 from deeplc import __version__
@@ -65,7 +64,6 @@ def _write_predictions(psm_list, predictions, output_path: Path):
 @click.version_option(version=__version__)
 def cli(logging_level, **kwargs):
     """DeepLC: Retention time prediction for peptides carrying any modification."""
-    install_rich_traceback(show_locals=True)
     logging.basicConfig(
         format="%(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -76,23 +74,29 @@ def cli(logging_level, **kwargs):
 
 @cli.command()
 @click.argument("psms", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--psm-filetype", "-t", type=click.Choice(PSM_FILETYPES), default=None)
+@click.option(
+    "--psm-filetype", "-t", type=click.Choice(PSM_FILETYPES), default=None,
+    help="File type for the input PSM file. Inferred from extension if not provided.",
+)
 @click.option(
     "--reference", type=click.Path(exists=True, dir_okay=False), default=None,
     help="Reference PSM file for calibration or fine-tuning.",
 )
 @click.option(
     "--reference-filetype", "-r", type=click.Choice(PSM_FILETYPES), default=None,
-    help="File type for the reference file. Inferred if not provided.",
+    help="File type for the reference file. Inferred from extension if not provided.",
 )
 @click.option(
     "--finetune", is_flag=True, default=False,
     help="Fine-tune the model to the reference before predicting. Requires --reference.",
 )
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
-@click.option("--model", "-m", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--model", "-m", type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Path to a model file. Uses the built-in default model if not provided.",
+)
 def predict(psms, psm_filetype, reference, reference_filetype, finetune, output, model):
-    """Predict retention times, optionally calibrating or fine-tuning to a reference."""
+    """Predict retention times for a list of peptide-spectrum matches."""
     if finetune and not reference:
         raise click.UsageError("--finetune requires --reference.")
 

@@ -25,6 +25,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx_rtd_theme",
     "sphinx_mdinclude",
+    "sphinx_click",
 ]
 source_suffix = [".rst", ".md"]
 master_doc = "index"
