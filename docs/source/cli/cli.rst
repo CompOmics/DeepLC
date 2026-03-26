@@ -2,5 +2,6 @@
 Command line interface
 **********************
 
-.. automodule:: deeplc.__main__
-
+.. click:: deeplc.__main__:cli
+   :prog: deeplc
+   :nested: full

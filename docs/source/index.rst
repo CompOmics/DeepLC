@@ -16,6 +16,7 @@
    :maxdepth: 2
 
    Readme <self>
+   FAQ <faq>
    Contributing <contributing>
    Changelog <changelog>
 

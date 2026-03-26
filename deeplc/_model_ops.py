@@ -32,7 +32,7 @@ def load_model(
     selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load model from file if a path is provided
-    if isinstance(model, str | Path):
+    if isinstance(model, (str, PathLike, Path)):
         loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
     elif isinstance(model, torch.nn.Module):
         loaded_model = model
@@ -54,8 +54,9 @@ def train(
     model: torch.nn.Module | PathLike | str | None,
     train_dataset: DeepLCDataset | Subset[DeepLCDataset],
     validation_dataset: DeepLCDataset | Subset[DeepLCDataset],
-    device: str = "cpu",
+    device: str | None = None,
     num_workers: int = 0,
+    num_threads: int | None = None,
     learning_rate: float = 0.001,
     epochs: int = 25,
     batch_size: int = 512,
@@ -77,6 +78,8 @@ def train(
         Device to train on ('cpu' or 'cuda').
     num_workers
         Number of worker processes for data loading.
+    num_threads
+        Number of threads for model operations on CPU (ignored if using GPU).
     learning_rate
         Learning rate for optimizer.
     epochs
@@ -94,6 +97,8 @@ def train(
         Trained model.
 
     """
+    torch.set_num_threads(num_threads or torch.get_num_threads())
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
 
     # Parse datasets; setup loaders
@@ -106,6 +111,13 @@ def train(
         shuffle=False,
         num_workers=num_workers,
     )
+
+    if len(train_loader) == 0:
+        raise ValueError("Training data loader is empty. Provide at least one training sample.")
+    if len(val_loader) == 0:
+        raise ValueError(
+            "Validation data loader is empty. Adjust validation data or validation_split."
+        )
 
     optimizer = _get_optimizer(model, learning_rate)
     loss_fn = torch.nn.L1Loss()
@@ -145,12 +157,15 @@ def train(
 def predict(
     model: torch.nn.Module | PathLike | str | None,
     data: Dataset,
-    device: str = "cpu",
+    device: str | None = None,
     batch_size: int = 512,
     num_workers: int = 0,
+    num_threads: int | None = None,
     show_progress: bool = True,
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
+    torch.set_num_threads(num_threads or torch.get_num_threads())
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
     data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     predictions = _predict_epoch(model, data_loader, device, show_progress=show_progress)
@@ -160,11 +175,14 @@ def predict(
 def evaluate(
     model: torch.nn.Module | PathLike | str | None,
     data: Dataset,
-    device: str = "cpu",
+    device: str | None = None,
     batch_size: int = 512,
     num_workers: int = 0,
+    num_threads: int | None = None,
 ) -> float:
     """Evaluate the model on the given dataset."""
+    torch.set_num_threads(num_threads or torch.get_num_threads())
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
     data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     loss_fn = torch.nn.L1Loss()
@@ -235,6 +253,8 @@ def _predict_epoch(
             features = [feature_tensor.to(device) for feature_tensor in features]
             outputs = model(*features)
             predictions.append(outputs.cpu())
+    if not predictions:
+        return torch.empty(0, dtype=torch.float32)
     return torch.cat(predictions, dim=0).squeeze()
 
 

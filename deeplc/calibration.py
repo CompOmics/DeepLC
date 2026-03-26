@@ -11,7 +11,7 @@ from sklearn.linear_model import LinearRegression  # type: ignore[import]
 from sklearn.pipeline import Pipeline, make_pipeline  # type: ignore[import]
 from sklearn.preprocessing import SplineTransformer  # type: ignore[import]
 
-from deeplc._exceptions import CalibrationError
+from deeplc.exceptions import CalibrationError
 
 LOGGER = logging.getLogger(__name__)
 
