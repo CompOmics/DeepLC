@@ -61,6 +61,8 @@ def train(
     epochs: int = 25,
     batch_size: int = 512,
     patience: int = 10,
+    freeze_epochs: int = 0,
+    unfreeze_lr_scale: float = 0.1,
     show_progress: bool = True,
 ) -> torch.nn.Module:
     """
@@ -119,6 +121,9 @@ def train(
             "Validation data loader is empty. Adjust validation data or validation_split."
         )
 
+    has_freeze = hasattr(model, "freeze_backbone") and hasattr(model, "unfreeze_backbone")
+    if has_freeze and freeze_epochs > 0:
+        model.freeze_backbone()
     optimizer = _get_optimizer(model, learning_rate)
     loss_fn = torch.nn.L1Loss()
 
@@ -129,7 +134,11 @@ def train(
     with _create_progress(disable=not show_progress) as progress:
         epoch_task = progress.add_task("Epochs", total=epochs, status="")
 
-        for _epoch in range(epochs):
+        for epoch in range(epochs):
+            if has_freeze and freeze_epochs > 0 and epoch == freeze_epochs:
+                model.unfreeze_backbone()
+                optimizer = _get_optimizer(model, learning_rate * unfreeze_lr_scale)
+
             avg_loss = _train_epoch(model, train_loader, optimizer, loss_fn, device)
             avg_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
 

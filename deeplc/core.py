@@ -16,12 +16,39 @@ from deeplc.calibration import (
     SplineTransformerCalibration,
 )
 from deeplc.data import DeepLCDataset, split_datasets
+from deeplc.multitask import MultitaskAdapter
 
 LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_NAME = "full_hc_PXD005573_pub_1fd8363d9af9dcad3be7553c39396960.pt"
 DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / DEFAULT_MODEL_NAME
+
+
+def _best_correlating_head(predictions: np.ndarray, targets: np.ndarray) -> int:
+    """Return the head index with highest valid Pearson correlation to targets."""
+    best_idx = 0
+    best_corr = float("-inf")
+
+    for idx in range(predictions.shape[1]):
+        pred_col = predictions[:, idx]
+        mask = np.isfinite(pred_col) & np.isfinite(targets)
+        if mask.sum() < 3:
+            continue
+        pred_masked = pred_col[mask]
+        target_masked = targets[mask]
+        if np.std(pred_masked) < 1e-8 or np.std(target_masked) < 1e-8:
+            continue
+        corr = np.corrcoef(pred_masked, target_masked)[0, 1]
+        if np.isfinite(corr) and corr > best_corr:
+            best_corr = corr
+            best_idx = idx
+
+    return best_idx
+
+
+def _is_multitask_output(predictions: np.ndarray) -> bool:
+    return predictions.ndim == 2 and predictions.shape[1] > 1
 
 
 def predict(
@@ -110,6 +137,12 @@ def calibrate(
     # Fit calibration
     LOGGER.debug("Fitting calibration...")
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
+
+    if _is_multitask_output(source_rt_cal):
+        selected_head_idx = _best_correlating_head(source_rt_cal, target_rt_cal)
+        source_rt_cal = source_rt_cal[:, selected_head_idx]
+        setattr(calibration, "selected_head_idx", int(selected_head_idx))
+
     calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
     return calibration
@@ -167,6 +200,21 @@ def predict_and_calibrate(
         )
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
+
+    if _is_multitask_output(predicted_rt):
+        selected_head_idx = getattr(calibration, "selected_head_idx", None)
+        if selected_head_idx is None:
+            ref_pred_rt = predict(
+                psm_list=psm_list_reference,
+                model=model,
+                predict_kwargs=predict_kwargs,
+            )
+            if _is_multitask_output(ref_pred_rt):
+                ref_targets = np.array(psm_list_reference["retention_time"], dtype=np.float32)
+                selected_head_idx = _best_correlating_head(ref_pred_rt, ref_targets)
+            else:
+                selected_head_idx = 0
+        predicted_rt = predicted_rt[:, int(selected_head_idx)]
 
     # Apply calibration to predictions
     calibrated_rt = calibration.transform(predicted_rt)
@@ -271,11 +319,36 @@ def finetune(
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split
     )
+    train_kwargs_local = dict(train_kwargs or {})
+    model_for_training: torch.nn.Module | PathLike | str | None = model or DEFAULT_MODEL
+
+    loaded_model = _model_ops.load_model(
+        model_for_training,
+        device=train_kwargs_local.get("device"),
+    )
+
+    sample_features, _ = training_dataset[0]
+    sample_features = [feature.unsqueeze(0).to(next(loaded_model.parameters()).device) for feature in sample_features]
+    with torch.no_grad():
+        sample_output = loaded_model(*sample_features)
+
+    if sample_output.ndim == 2 and sample_output.shape[1] > 1:
+        adapter_hidden_size = int(train_kwargs_local.pop("adapter_hidden_size", 256))
+        freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
+        model_for_training = MultitaskAdapter(
+            multitask_model=loaded_model,
+            n_heads=sample_output.shape[1],
+            hidden_size=adapter_hidden_size,
+        )
+        train_kwargs_local["freeze_epochs"] = freeze_epochs
+    else:
+        model_for_training = loaded_model
+
     finetuned_model = _model_ops.train(
-        model=model or DEFAULT_MODEL,
+        model=model_for_training,
         train_dataset=training_dataset,
         validation_dataset=validation_dataset,
-        **(train_kwargs or {}),
+        **train_kwargs_local,
     )
     return finetuned_model
 
