@@ -72,6 +72,13 @@ def cli(logging_level, **kwargs):
     )
 
 
+def _validate_finetune(ctx, param, value):
+    """Validate that --finetune is only used with --reference."""
+    if value and not ctx.params.get("reference"):
+        raise click.UsageError("--finetune requires --reference.")
+    return value
+
+
 @cli.command()
 @click.argument("psms", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option(
@@ -83,13 +90,14 @@ def cli(logging_level, **kwargs):
 )
 @click.option(
     "--reference",
+    "-r",
     type=click.Path(exists=True, dir_okay=False),
     default=None,
     help="Reference PSM file for calibration or fine-tuning.",
 )
 @click.option(
     "--reference-filetype",
-    "-r",
+    "-rt",
     type=click.Choice(PSM_FILETYPES),
     default=None,
     help="File type for the reference file. Inferred from extension if not provided.",
@@ -98,6 +106,8 @@ def cli(logging_level, **kwargs):
     "--finetune",
     is_flag=True,
     default=False,
+    callback=_validate_finetune,
+    expose_value=True,
     help="Fine-tune the model to the reference before predicting. Requires --reference.",
 )
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
@@ -110,9 +120,6 @@ def cli(logging_level, **kwargs):
 )
 def predict(psms, psm_filetype, reference, reference_filetype, finetune, output, model):
     """Predict retention times for a list of peptide-spectrum matches."""
-    if finetune and not reference:
-        raise click.UsageError("--finetune requires --reference.")
-
     psm_list = _read_psm_file(psms, psm_filetype)
     output_path = _infer_output_name(psms, output)
 
@@ -134,6 +141,14 @@ def predict(psms, psm_filetype, reference, reference_filetype, finetune, output,
         predictions = deeplc.core.predict(psm_list=psm_list, model=model)
 
     _write_predictions(psm_list, predictions, output_path)
+
+
+@cli.command()
+def gui():
+    """Launch the DeepLC graphical user interface."""
+    from deeplc.gui import main as gui_main
+
+    gui_main()
 
 
 def main():
