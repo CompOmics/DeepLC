@@ -7,3 +7,7 @@ class DeepLCError(Exception):
 
 class CalibrationError(DeepLCError):
     pass
+
+
+class ReferenceSelectionError(DeepLCError):
+    pass

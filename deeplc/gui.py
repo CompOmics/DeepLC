@@ -16,6 +16,7 @@ from psm_utils.io import READERS, read_file
 
 import deeplc.core
 from deeplc import __version__
+from deeplc._reference_selection import Q_VALUE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -91,29 +92,27 @@ def create_app():
 
         with ui.column().classes("w-full max-w-4xl mx-auto p-6 gap-6"):
             # --- Branding / hero ---
-            with ui.card().classes("w-full"):
-                with ui.row().classes("items-center gap-6"):
-                    if LOGO_PATH.exists():
-                        ui.image("/static/deeplc_logo.svg").classes("w-24")
-                    with ui.column().classes("gap-1"):
-                        ui.label("DeepLC").classes("text-3xl font-bold")
-                        ui.label(
-                            "Retention time prediction for peptides carrying any modification, "
-                            "powered by deep learning."
-                        ).classes("text-muted")
-                        with ui.row().classes("gap-3 mt-1 items-center"):
-                            ui.link(
-                                "GitHub",
-                                "https://github.com/compomics/deeplc",
-                            ).classes("text-sm")
-                            ui.link(
-                                "PyPI",
-                                "https://pypi.org/project/deeplc/",
-                            ).classes("text-sm")
-                            ui.link(
-                                "Bouwmeester et al., Nat Methods 2021",
-                                "https://doi.org/10.1038/s41592-021-01301-5",
-                            ).classes("text-sm")
+            with ui.card().classes("w-full"), ui.row().classes("items-center gap-6"):
+                if LOGO_PATH.exists():
+                    ui.image("/static/deeplc_logo.svg").classes("w-24")
+                with ui.column().classes("gap-1"):
+                    ui.label("DeepLC").classes("text-3xl font-bold")
+                    ui.label(
+                        "Retention time prediction for peptides carrying any modification"
+                    ).classes("text-muted")
+                    with ui.row().classes("gap-3 mt-1 items-center"):
+                        ui.link(
+                            "GitHub",
+                            "https://github.com/compomics/deeplc",
+                        ).classes("text-sm")
+                        ui.link(
+                            "PyPI",
+                            "https://pypi.org/project/deeplc/",
+                        ).classes("text-sm")
+                        ui.link(
+                            "Bouwmeester et al., Nat Methods 2021",
+                            "https://doi.org/10.1038/s41592-021-01301-5",
+                        ).classes("text-sm")
 
             # --- Example Data ---
             with ui.card().classes("w-full"):
@@ -128,9 +127,7 @@ def create_app():
                     lambda e: _toggle_example(e.value, state, upload_card)
                 )
 
-                with ui.expansion("Preview example data", icon="visibility").classes(
-                    "w-full"
-                ):
+                with ui.expansion("Preview example data", icon="visibility").classes("w-full"):
                     example_columns = [
                         {
                             "name": "peptidoform",
@@ -146,8 +143,7 @@ def create_app():
                         },
                     ]
                     example_rows = [
-                        {"peptidoform": pf, "retention_time": rt}
-                        for pf, rt in EXAMPLE_PEPTIDES
+                        {"peptidoform": pf, "retention_time": rt} for pf, rt in EXAMPLE_PEPTIDES
                     ]
                     ui.table(
                         columns=example_columns,
@@ -160,19 +156,24 @@ def create_app():
                 ui.label("Input").classes("text-xl font-semibold")
                 ui.separator()
 
-                # PSM file upload
-                with ui.row().classes("items-center gap-1 mt-2"):
-                    ui.label("Peptide file").classes("font-medium")
-                    ui.icon("help_outline", size="xs").classes(
-                        "text-muted-hint cursor-help"
-                    ).tooltip(
-                        "Any PSM format supported by psm_utils: CSV/TSV, MaxQuant msms.txt, "
-                        "Sage, Percolator, MSAmanda, mzIdentML, pepXML, and more."
-                    )
-                ui.label(
-                    "Peptide sequences in ProForma 2.0 notation, "
-                    "e.g. AAINQK[Acetyl]LIETGER/2"
-                ).classes("text-xs text-muted-hint")
+                with ui.column().classes("gap-1 "):
+                    ui.markdown(
+                        "Upload a file with peptide-spectrum matches in any format "
+                        "supported by [psm_utils](https://psm-utils.readthedocs.io/en/stable/api/psm_utils.io/), "
+                        "including MaxQuant msms.txt, Sage, Percolator, MSAmanda, "
+                        "mzIdentML, pepXML, and more. A generic "
+                        "[TSV format](https://psm-utils.readthedocs.io/en/v1.5.2/api/psm_utils.io/#module-psm_utils.io.tsv) "
+                        "is also accepted, requiring `spectrum_id` and `peptidoform` columns, "
+                        "and optionally `retention_time` (for calibration), `score`, `qvalue`, "
+                        "and `is_decoy` (for auto-calibration)."
+                    ).classes("text-sm text-muted-secondary")
+                    ui.markdown(
+                        "Peptide sequences should use "
+                        "[ProForma 2.0](https://www.psidev.info/proforma) notation "
+                        "(e.g. `AAINQK[Acetyl]LIETGER/2`). Modification labels must be "
+                        "resolvable to atomic compositions, otherwise they will not be "
+                        "considered for predictions."
+                    ).classes("text-sm text-muted-secondary")
 
                 ui.upload(
                     label="Upload peptide file",
@@ -188,69 +189,105 @@ def create_app():
                     value="auto",
                 ).classes("w-64")
 
-                # Reference file upload
-                with ui.row().classes("items-center gap-1 mt-4"):
-                    ui.label("Reference file (optional)").classes("font-medium")
-                    ui.icon("help_outline", size="xs").classes(
-                        "text-muted-hint cursor-help"
-                    ).tooltip(
-                        "A file with known retention times used for calibration. "
-                        "This improves prediction accuracy by mapping raw predictions "
-                        "to your LC setup. Must include a retention_time column."
-                    )
-                ui.label(
-                    "Same format as above, but must include observed retention times."
-                ).classes("text-xs text-muted-hint")
-
-                ui.upload(
-                    label="Upload reference file",
-                    auto_upload=True,
-                    on_upload=lambda e: _handle_ref_upload(e, state),
-                ).classes("w-full").props(
-                    'accept=".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"'
-                )
-
-                ref_type_select = ui.select(
-                    label="File type (auto-detected if not set)",
-                    options=["auto"] + PSM_FILETYPES,
-                    value="auto",
-                ).classes("w-64")
-
-            # --- Options Section ---
+            # --- Calibration Section ---
             with ui.card().classes("w-full"):
-                ui.label("Options").classes("text-xl font-semibold")
+                ui.label("Calibration").classes("text-xl font-semibold")
                 ui.separator()
 
-                with ui.row().classes("items-center gap-1 mt-2"):
-                    finetune_switch = ui.switch("Fine-tune model to reference")
+                ui.markdown(
+                    "Calibration maps DeepLC's raw predictions to your specific LC setup, "
+                    "significantly improving accuracy. It requires a set of peptides with "
+                    "known retention times as reference. You can skip calibration, let "
+                    "DeepLC automatically select the best PSMs from your input file, or "
+                    "provide a separate reference file."
+                ).classes("text-sm text-muted-secondary")
+
+                calibration_mode = (
+                    ui.radio(
+                        {
+                            "none": "No calibration",
+                            "auto": "Auto-calibrate from input",
+                            "reference": "Provide a reference file",
+                        },
+                        value="none",
+                    )
+                    .props("inline")
+                    .classes("mt-2")
+                )
+
+                # Auto-calibrate description
+                auto_calibrate_info = ui.markdown(
+                    "Automatically selects the best PSMs from the input file as "
+                    "calibration reference, based on q-values or scores. Requires "
+                    "PSMs with observed retention times."
+                ).classes("text-xs text-muted-hint mt-1")
+                auto_calibrate_info.bind_visibility_from(calibration_mode, "value", value="auto")
+
+                # Reference file upload (visible only when "reference" is selected)
+                ref_upload_container = ui.column().classes("w-full gap-2 mt-2")
+                ref_upload_container.bind_visibility_from(
+                    calibration_mode, "value", value="reference"
+                )
+                with ref_upload_container:
+                    ui.markdown(
+                        "Upload a reference file with known retention times. Same format "
+                        "as the input file, but must include observed retention times in "
+                        "the `retention_time` column."
+                    ).classes("text-xs text-muted-hint")
+
+                    ui.upload(
+                        label="Upload reference file",
+                        auto_upload=True,
+                        on_upload=lambda e: _handle_ref_upload(e, state),
+                    ).classes("w-full").props(
+                        'accept=".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"'
+                    )
+
+                    ref_type_select = ui.select(
+                        label="File type (auto-detected if not set)",
+                        options=["auto"] + PSM_FILETYPES,
+                        value="auto",
+                    ).classes("w-64")
+
+                # Fine-tune option (visible when calibration is enabled)
+                finetune_row = ui.row().classes("items-center gap-1 mt-2")
+                finetune_row.bind_visibility_from(
+                    calibration_mode, "value", backward=lambda v: v != "none"
+                )
+                with finetune_row:
+                    finetune_switch = ui.switch("Fine-tune model")
                     ui.icon("help_outline", size="xs").classes(
                         "text-muted-hint cursor-help"
                     ).tooltip(
-                        "Train the model further on your reference data before predicting. "
-                        "Can improve accuracy for your specific LC setup but takes longer. "
-                        "Requires a reference file."
+                        "Train the model further on the reference data before predicting. "
+                        "Can improve accuracy for your specific LC setup but takes longer."
                     )
 
             # --- Run Button & Progress ---
-            run_button = ui.button(
-                "Predict retention times",
-                icon="play_arrow",
-                on_click=lambda: _run_prediction(
-                    state=state,
-                    psm_type=psm_type_select.value,
-                    ref_type=ref_type_select.value,
-                    finetune=finetune_switch.value,
-                    run_button=run_button,
-                    progress_row=progress_row,
-                    spinner=spinner,
-                    status_label=status_label,
-                    results_container=results_container,
-                ),
-            ).classes("w-full text-lg").props('color="primary" size="lg"')
+            run_button = (
+                ui.button(
+                    "Predict retention times",
+                    icon="play_arrow",
+                    on_click=lambda: _run_prediction(
+                        state=state,
+                        psm_type=psm_type_select.value,
+                        ref_type=ref_type_select.value,
+                        calibration_mode=calibration_mode.value,
+                        finetune=finetune_switch.value,
+                        run_button=run_button,
+                        progress_card=progress_card,
+                        spinner=spinner,
+                        status_label=status_label,
+                        results_container=results_container,
+                    ),
+                )
+                .classes("w-full text-lg")
+                .props('color="primary" size="lg"')
+            )
 
-            progress_row = ui.row().classes("w-full items-center gap-3 mt-2")
-            progress_row.visible = False
-            with progress_row:
+            progress_card = ui.card().classes("w-full")
+            progress_card.visible = False
+            with progress_card, ui.row().classes("w-full items-center gap-3"):
                 spinner = ui.spinner("dots", size="lg", color=PRIMARY_COLOR)
                 status_label = ui.label("").classes("text-muted")
 
@@ -258,18 +295,18 @@ def create_app():
             results_container = ui.column().classes("w-full gap-4")
 
         # --- Footer ---
-        with ui.footer().classes("text-center text-sm py-3"):
-            with ui.row().classes("items-center justify-center gap-2"):
-                ui.label(f"DeepLC {__version__}")
-                ui.label("|")
-                ui.link("GitHub", "https://github.com/compomics/deeplc").classes(
-                    "!text-white"
-                )
-                ui.label("|")
-                ui.link(
-                    "Bouwmeester et al., Nature Methods 2021",
-                    "https://doi.org/10.1038/s41592-021-01301-5",
-                ).classes("!text-white")
+        with (
+            ui.footer().classes("text-center text-sm py-3"),
+            ui.row().classes("items-center justify-center gap-2"),
+        ):
+            ui.label(f"DeepLC {__version__}")
+            ui.label("|")
+            ui.link("GitHub", "https://github.com/compomics/deeplc").classes("!text-white")
+            ui.label("|")
+            ui.link(
+                "Bouwmeester et al., Nature Methods 2021",
+                "https://doi.org/10.1038/s41592-021-01301-5",
+            ).classes("!text-white")
 
 
 def _toggle_example(use_example: bool, state: dict, upload_card):
@@ -293,57 +330,71 @@ def _build_example_psm_list() -> PSMList:
 
 
 def _cleanup_temp_file(state, key):
-    """Remove a temporary file if it exists."""
+    """Remove a temporary file and its parent temp directory if it exists."""
     path = state.get(key)
     if path:
         with contextlib.suppress(OSError):
             os.unlink(path)
+        with contextlib.suppress(OSError):
+            os.rmdir(Path(path).parent)
         state[key] = None
 
 
 async def _handle_psm_upload(e, state):
     """Handle PSM file upload."""
     _cleanup_temp_file(state, "psm_file_path")
-    suffix = Path(e.file.name).suffix
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.close()
-    await e.file.save(tmp.name)
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = Path(tmp_dir) / e.file.name
+    await e.file.save(str(tmp_path))
     state["psm_file"] = e.file.name
-    state["psm_file_path"] = tmp.name
+    state["psm_file_path"] = str(tmp_path)
     ui.notify(f"Uploaded: {e.file.name}", type="positive")
 
 
 async def _handle_ref_upload(e, state):
     """Handle reference file upload."""
     _cleanup_temp_file(state, "ref_file_path")
-    suffix = Path(e.file.name).suffix
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.close()
-    await e.file.save(tmp.name)
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = Path(tmp_dir) / e.file.name
+    await e.file.save(str(tmp_path))
     state["ref_file"] = e.file.name
-    state["ref_file_path"] = tmp.name
+    state["ref_file_path"] = str(tmp_path)
     ui.notify(f"Uploaded: {e.file.name}", type="positive")
 
 
 async def _run_prediction(
-    state, psm_type, ref_type, finetune, run_button, progress_row, spinner, status_label,
+    state,
+    psm_type,
+    ref_type,
+    calibration_mode,
+    finetune,
+    run_button,
+    progress_card,
+    spinner,
+    status_label,
     results_container,
 ):
     """Run DeepLC prediction."""
+    auto_calibrate = calibration_mode == "auto"
+    use_reference = calibration_mode == "reference"
+
     # --- Quick validation (before starting progress) ---
     if not state.get("use_example"):
         if not state["psm_file_path"]:
             ui.notify("Please upload a peptide file or enable example data.", type="negative")
             return
-        if finetune and not state["ref_file_path"]:
-            ui.notify("Fine-tuning requires a reference file.", type="negative")
+        if use_reference and not state["ref_file_path"]:
+            ui.notify("Please upload a reference file.", type="negative")
             return
 
     # --- Disable button & show progress ---
     run_button.disable()
-    progress_row.visible = True
+    progress_card.visible = True
     spinner.visible = True
     results_container.clear()
+    await ui.run_javascript(
+        f'document.getElementById("c{progress_card.id}").scrollIntoView({{behavior: "smooth"}})'
+    )
 
     try:
         # --- Resolve inputs ---
@@ -354,43 +405,53 @@ async def _run_prediction(
         else:
             psm_filetype = psm_type if psm_type != "auto" else None
             kwargs = {"filetype": psm_filetype} if psm_filetype else {}
-            psm_list = read_file(state["psm_file_path"], **kwargs)
+            psm_list = await run.io_bound(read_file, state["psm_file_path"], **kwargs)
             psm_list_reference = None
             if state["ref_file_path"]:
                 ref_filetype = ref_type if ref_type != "auto" else None
                 ref_kwargs = {"filetype": ref_filetype} if ref_filetype else {}
-                psm_list_reference = read_file(state["ref_file_path"], **ref_kwargs)
+                psm_list_reference = await run.io_bound(
+                    read_file, state["ref_file_path"], **ref_kwargs
+                )
 
         n_peptides = len(psm_list)
+
+        # --- Auto-calibrate: select reference PSMs off the main thread ---
+        if auto_calibrate and not psm_list_reference:
+            from deeplc._reference_selection import select_reference_psms
+
+            status_label.text = "Selecting reference PSMs for auto-calibration..."
+            psm_list_reference = await run.io_bound(select_reference_psms, psm_list)
+            ui.notify(
+                f"Auto-calibration: selected {len(psm_list_reference)} reference PSMs.",
+                type="positive",
+            )
+
         n_ref = len(psm_list_reference) if psm_list_reference else 0
 
         # --- Predicting ---
-        if n_ref:
-            status_label.text = (
-                f"Predicting for {n_peptides} peptides "
-                f"with {n_ref} reference peptides..."
-            )
-        else:
-            status_label.text = f"Predicting for {n_peptides} peptides..."
-
         if psm_list_reference and finetune:
             status_label.text = (
                 f"Fine-tuning model on {n_ref} reference peptides, "
                 f"then predicting for {n_peptides} peptides..."
             )
-            predictions = await run.cpu_bound(
+            predictions = await run.io_bound(
                 deeplc.core.finetune_and_predict,
                 psm_list=psm_list,
                 psm_list_reference=psm_list_reference,
             )
         elif psm_list_reference:
-            predictions = await run.cpu_bound(
+            status_label.text = (
+                f"Predicting for {n_peptides} peptides with {n_ref} reference peptides..."
+            )
+            predictions = await run.io_bound(
                 deeplc.core.predict_and_calibrate,
                 psm_list=psm_list,
                 psm_list_reference=psm_list_reference,
             )
         else:
-            predictions = await run.cpu_bound(
+            status_label.text = f"Predicting for {n_peptides} peptides..."
+            predictions = await run.io_bound(
                 deeplc.core.predict,
                 psm_list=psm_list,
             )
@@ -401,6 +462,8 @@ async def _run_prediction(
                 "peptidoform": [str(psm.peptidoform) for psm in psm_list],
                 "observed_rt": [psm.retention_time for psm in psm_list],
                 "predicted_rt": predictions,
+                "qvalue": [psm.qvalue for psm in psm_list],
+                "is_decoy": [psm.is_decoy for psm in psm_list],
             }
         )
         state["result_df"] = result_df
@@ -408,41 +471,77 @@ async def _run_prediction(
         spinner.visible = False
         status_label.text = f"Done! Predicted retention times for {len(predictions)} peptides."
         _show_results(results_container, result_df)
+        await ui.run_javascript(
+            f'document.getElementById("c{results_container.id}").scrollIntoView({{behavior: "smooth"}})'
+        )
+
+    except RuntimeError:
+        # Client was disconnected (e.g. page reload during prediction)
+        logger.debug("Client disconnected during prediction.")
 
     except Exception as e:
         logger.exception("Prediction failed")
-        spinner.visible = False
-        status_label.text = f"Error: {e}"
-        ui.notify(f"Prediction failed: {e}", type="negative", close_button=True)
+        with contextlib.suppress(RuntimeError):
+            spinner.visible = False
+            status_label.text = "Prediction failed."
+            error_type = type(e).__name__
+            with results_container, ui.card().classes("w-full border-l-4 border-red-500"):
+                ui.label(error_type).classes("font-bold text-red-600")
+                ui.label(str(e)).classes("text-sm text-muted")
 
     finally:
-        run_button.enable()
-        _cleanup_temp_file(state, "psm_file_path")
-        _cleanup_temp_file(state, "ref_file_path")
+        with contextlib.suppress(RuntimeError):
+            run_button.enable()
 
 
 def _show_results(container, result_df: pd.DataFrame):
     """Display prediction results."""
-    has_observed = result_df["observed_rt"].notna().any()
+    has_observed = bool(result_df["observed_rt"].notna().any())
+    has_td = bool(result_df["is_decoy"].notna().any())
+    has_qvalues = bool(result_df["qvalue"].notna().any())
+
+    # Determine which PSMs to use for metrics
+    valid = result_df.dropna(subset=["observed_rt", "predicted_rt"])
+    if has_td or has_qvalues:
+        # Use accepted targets only for metrics
+        # If TD labels exist, treat unknown as decoy (conservative); otherwise assume target
+        accepted = valid[~valid["is_decoy"].fillna(has_td)]
+        if has_qvalues:
+            accepted = accepted[accepted["qvalue"].fillna(1.0) <= Q_VALUE_THRESHOLD]
+    else:
+        accepted = valid
 
     with container:
         # --- Metrics ---
-        if has_observed:
-            valid = result_df.dropna(subset=["observed_rt", "predicted_rt"])
-            rmse = np.sqrt(np.mean((valid["observed_rt"] - valid["predicted_rt"]) ** 2))
+        if has_observed and len(accepted) > 0:
+            rt_range = accepted["observed_rt"].max() - accepted["observed_rt"].min()
+            mae = np.mean(np.abs(accepted["observed_rt"] - accepted["predicted_rt"]))
+            rmae = (mae / rt_range * 100) if rt_range > 0 else float("nan")
 
             with ui.card().classes("w-full"):
                 ui.label("Metrics").classes("text-xl font-semibold")
                 ui.separator()
+                if has_td or has_qvalues:
+                    metric_scope = (
+                        "Calculated on accepted target PSMs only"
+                        if has_qvalues
+                        else "Calculated on target PSMs only"
+                    )
+                    ui.label(
+                        metric_scope
+                        + (f" (q-value ≤ {Q_VALUE_THRESHOLD})" if has_qvalues else "")
+                        + "."
+                    ).classes("text-xs text-muted-hint")
                 with ui.row().classes("gap-8 mt-2"):
                     with ui.column().classes("items-center"):
-                        ui.label(f"{rmse:.4f}").classes("text-3xl font-bold")
-                        ui.label("RMSE").classes(
-                            "text-sm text-muted-secondary"
-                        )
+                        ui.label(f"{mae:.4f}").classes("text-3xl font-bold")
+                        ui.label("MAE").classes("text-sm text-muted-secondary")
                     with ui.column().classes("items-center"):
-                        ui.label(f"{len(valid)}").classes("text-3xl font-bold")
-                        ui.label("Peptides with observed RT").classes(
+                        ui.label(f"{rmae:.2f}%").classes("text-3xl font-bold")
+                        ui.label("Relative MAE").classes("text-sm text-muted-secondary")
+                    with ui.column().classes("items-center"):
+                        ui.label(f"{len(accepted)}").classes("text-3xl font-bold")
+                        ui.label("Accepted PSMs" if has_qvalues else "Target PSMs").classes(
                             "text-sm text-muted-secondary"
                         )
 
@@ -453,11 +552,11 @@ def _show_results(container, result_df: pd.DataFrame):
 
             if has_observed:
                 # Scatter: observed vs predicted
-                fig_scatter = _plot_scatter(valid)
+                fig_scatter = _plot_scatter(valid, has_td=has_td, has_qvalues=has_qvalues)
                 ui.plotly(fig_scatter).classes("w-full h-96")
 
                 # Baseline comparison
-                fig_baseline = _plot_baseline_comparison(valid)
+                fig_baseline = _plot_baseline_comparison(accepted)
                 if fig_baseline is not None:
                     ui.separator()
                     ui.plotly(fig_baseline).classes("w-full h-96")
@@ -496,9 +595,7 @@ def _show_results(container, result_df: pd.DataFrame):
                     elif isinstance(value, (np.floating, np.integer)):
                         row[key] = float(value)
 
-            ui.table(columns=columns, rows=rows, pagination={"rowsPerPage": 20}).classes(
-                "w-full"
-            )
+            ui.table(columns=columns, rows=rows, pagination={"rowsPerPage": 20}).classes("w-full")
             if len(result_df) > 200:
                 ui.label(f"Showing first 200 of {len(result_df)} rows.").classes(
                     "text-sm text-muted-hint"
@@ -517,22 +614,77 @@ def _show_results(container, result_df: pd.DataFrame):
             ).props('color="primary"')
 
 
-def _plot_scatter(valid: pd.DataFrame) -> go.Figure:
+MAX_SCATTER_POINTS = 10_000
+
+
+def _subsample(df: pd.DataFrame, max_points: int = MAX_SCATTER_POINTS) -> pd.DataFrame:
+    """Randomly subsample a DataFrame if it exceeds max_points."""
+    if len(df) <= max_points:
+        return df
+    return df.sample(n=max_points, random_state=42)
+
+
+def _plot_scatter(
+    valid: pd.DataFrame, has_td: bool = False, has_qvalues: bool = False
+) -> go.Figure:
     """Scatter plot of observed vs predicted retention times with diagonal."""
-    fig = px.scatter(
-        valid,
-        x="observed_rt",
-        y="predicted_rt",
-        hover_data=["peptidoform"],
-        opacity=0.3,
-        color_discrete_sequence=[PRIMARY_COLOR],
-        labels={
-            "observed_rt": "Observed retention time",
-            "predicted_rt": "Predicted retention time",
-        },
-        title="Predicted vs. observed retention times",
-    )
-    fig.update_traces(marker=dict(size=5))
+    fig = go.Figure()
+
+    if has_td or has_qvalues:
+        # Classify PSMs into categories
+        # If TD labels exist, treat unknown as decoy (conservative); otherwise assume target
+        is_decoy = valid["is_decoy"].fillna(has_td)
+        if has_qvalues:
+            is_accepted = (~is_decoy) & (valid["qvalue"].fillna(1.0) <= Q_VALUE_THRESHOLD)
+            accepted_label = "Target (accepted)"
+        else:
+            is_accepted = ~is_decoy
+            accepted_label = "Target"
+        is_rejected_target = (~is_decoy) & (~is_accepted)
+
+        # Decoys in light grey
+        if is_decoy.any():
+            d = _subsample(valid[is_decoy])
+            fig.add_scattergl(
+                x=d["observed_rt"],
+                y=d["predicted_rt"],
+                mode="markers",
+                name="Decoy",
+                marker=dict(size=5, color="lightgrey", opacity=0.3),
+                hovertext=d["peptidoform"],
+            )
+        # Non-accepted targets in dark grey
+        if is_rejected_target.any():
+            r = _subsample(valid[is_rejected_target])
+            fig.add_scattergl(
+                x=r["observed_rt"],
+                y=r["predicted_rt"],
+                mode="markers",
+                name="Target (not accepted)",
+                marker=dict(size=5, color="silver", opacity=0.3),
+                hovertext=r["peptidoform"],
+            )
+        # Accepted targets in primary color
+        if is_accepted.any():
+            a = _subsample(valid[is_accepted])
+            fig.add_scattergl(
+                x=a["observed_rt"],
+                y=a["predicted_rt"],
+                mode="markers",
+                name=accepted_label,
+                marker=dict(size=5, color=PRIMARY_COLOR, opacity=0.3),
+                hovertext=a["peptidoform"],
+            )
+    else:
+        v = _subsample(valid)
+        fig.add_scattergl(
+            x=v["observed_rt"],
+            y=v["predicted_rt"],
+            mode="markers",
+            marker=dict(size=5, color=PRIMARY_COLOR, opacity=0.3),
+            hovertext=v["peptidoform"],
+            showlegend=False,
+        )
 
     # Diagonal reference line
     axis_min = min(valid["observed_rt"].min(), valid["predicted_rt"].min())
@@ -544,15 +696,28 @@ def _plot_scatter(valid: pd.DataFrame) -> go.Figure:
         line=dict(color="red", width=2, dash="dash"),
         showlegend=False,
     )
-    fig.update_layout(template="plotly_white", showlegend=False)
+    fig.update_layout(
+        template="plotly_white",
+        title=(
+            "Predicted vs. observed retention times"
+            + (
+                f" (subsampled to {MAX_SCATTER_POINTS:,} points per category)"
+                if len(valid) > MAX_SCATTER_POINTS
+                else ""
+            )
+        ),
+        xaxis_title="Observed retention time",
+        yaxis_title="Predicted retention time",
+        showlegend=bool(has_td or has_qvalues),
+    )
     return fig
 
 
 def _plot_baseline_comparison(valid: pd.DataFrame) -> go.Figure | None:
     """
-    Plot current RMSE performance in context of baseline DeepLC runs.
+    Plot current relative MAE performance in context of baseline DeepLC runs.
 
-    Adapted from deeplc.plot.distribution_baseline, using RMSE instead of relative MAE.
+    Adapted from deeplc.plot.distribution_baseline for GUI use.
     """
     baseline_path = (
         Path(__file__).resolve().parent
@@ -565,7 +730,7 @@ def _plot_baseline_comparison(valid: pd.DataFrame) -> go.Figure | None:
 
     baseline_df = pd.read_csv(baseline_path)
 
-    # Compute relative RMSE for baseline runs (using transfer_learning column and diff)
+    # Compute relative MAE for baseline runs (using transfer_learning column and diff)
     # Baseline CSV has columns: calibrate, new_model, transfer_learning, diff
     # We compute relative error as percentage of the RT range (diff column)
     baseline_df["rel_mae_best"] = (
@@ -621,7 +786,7 @@ def main():
     """Run the DeepLC GUI."""
     logging.basicConfig(level=logging.INFO)
     create_app()
-    ui.run(title="DeepLC", favicon="🧬", port=8080, reload=False)
+    ui.run(title="DeepLC", favicon="/static/deeplc_logo.svg", port=8080, reload=False)
 
 
 if __name__ in {"__main__", "__mp_main__"}:

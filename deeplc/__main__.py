@@ -73,9 +73,9 @@ def cli(logging_level, **kwargs):
 
 
 def _validate_finetune(ctx, param, value):
-    """Validate that --finetune is only used with --reference."""
-    if value and not ctx.params.get("reference"):
-        raise click.UsageError("--finetune requires --reference.")
+    """Validate that --finetune is only used with --reference or --auto-calibrate."""
+    if value and not ctx.params.get("reference") and not ctx.params.get("auto_calibrate"):
+        raise click.UsageError("--finetune requires --reference or --auto-calibrate.")
     return value
 
 
@@ -103,12 +103,18 @@ def _validate_finetune(ctx, param, value):
     help="File type for the reference file. Inferred from extension if not provided.",
 )
 @click.option(
+    "--auto-calibrate",
+    is_flag=True,
+    default=False,
+    help="Automatically select the best PSMs from the input file as calibration reference.",
+)
+@click.option(
     "--finetune",
     is_flag=True,
     default=False,
     callback=_validate_finetune,
     expose_value=True,
-    help="Fine-tune the model to the reference before predicting. Requires --reference.",
+    help="Fine-tune the model to the reference before predicting. Requires --reference or --auto-calibrate.",
 )
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
 @click.option(
@@ -118,8 +124,13 @@ def _validate_finetune(ctx, param, value):
     default=None,
     help="Path to a model file. Uses the built-in default model if not provided.",
 )
-def predict(psms, psm_filetype, reference, reference_filetype, finetune, output, model):
+def predict(
+    psms, psm_filetype, reference, reference_filetype, auto_calibrate, finetune, output, model
+):
     """Predict retention times for a list of peptide-spectrum matches."""
+    if auto_calibrate and reference:
+        raise click.UsageError("--auto-calibrate and --reference are mutually exclusive.")
+
     psm_list = _read_psm_file(psms, psm_filetype)
     output_path = _infer_output_name(psms, output)
 
@@ -137,6 +148,11 @@ def predict(psms, psm_filetype, reference, reference_filetype, finetune, output,
                 psm_list_reference=psm_list_reference,
                 model=model,
             )
+    elif auto_calibrate:
+        if finetune:
+            predictions = deeplc.core.finetune_and_predict(psm_list=psm_list, model=model)
+        else:
+            predictions = deeplc.core.predict_and_calibrate(psm_list=psm_list, model=model)
     else:
         predictions = deeplc.core.predict(psm_list=psm_list, model=model)
 
