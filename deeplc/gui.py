@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 PSM_FILETYPES = list(READERS.keys())
 LOGO_PATH = Path(__file__).resolve().parent.parent / "img" / "deeplc_logo.svg"
 PRIMARY_COLOR = "#763737"
+UPLOAD_ACCEPT = ".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"
+MAX_SCATTER_POINTS = 10_000
 
 EXAMPLE_PEPTIDES = [
     ("AAGPSLSHTSGGTQSK/2", 12.16),
@@ -128,26 +130,15 @@ def create_app():
                 )
 
                 with ui.expansion("Preview example data", icon="visibility").classes("w-full"):
-                    example_columns = [
-                        {
-                            "name": "peptidoform",
-                            "label": "peptidoform",
-                            "field": "peptidoform",
-                            "align": "left",
-                        },
-                        {
-                            "name": "retention_time",
-                            "label": "retention_time",
-                            "field": "retention_time",
-                            "align": "left",
-                        },
-                    ]
-                    example_rows = [
-                        {"peptidoform": pf, "retention_time": rt} for pf, rt in EXAMPLE_PEPTIDES
-                    ]
                     ui.table(
-                        columns=example_columns,
-                        rows=example_rows,
+                        columns=[
+                            {"name": c, "label": c, "field": c, "align": "left"}
+                            for c in ["peptidoform", "retention_time"]
+                        ],
+                        rows=[
+                            {"peptidoform": pf, "retention_time": rt}
+                            for pf, rt in EXAMPLE_PEPTIDES
+                        ],
                     ).classes("w-full").props("dense")
 
             # --- Input Section ---
@@ -178,10 +169,8 @@ def create_app():
                 ui.upload(
                     label="Upload peptide file",
                     auto_upload=True,
-                    on_upload=lambda e: _handle_psm_upload(e, state),
-                ).classes("w-full").props(
-                    'accept=".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"'
-                )
+                    on_upload=lambda e: _handle_upload(e, state, "psm_file", "psm_file_path"),
+                ).classes("w-full").props(f'accept="{UPLOAD_ACCEPT}"')
 
                 psm_type_select = ui.select(
                     label="File type (auto-detected if not set)",
@@ -238,10 +227,8 @@ def create_app():
                     ui.upload(
                         label="Upload reference file",
                         auto_upload=True,
-                        on_upload=lambda e: _handle_ref_upload(e, state),
-                    ).classes("w-full").props(
-                        'accept=".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"'
-                    )
+                        on_upload=lambda e: _handle_upload(e, state, "ref_file", "ref_file_path"),
+                    ).classes("w-full").props(f'accept="{UPLOAD_ACCEPT}"')
 
                     ref_type_select = ui.select(
                         label="File type (auto-detected if not set)",
@@ -340,26 +327,48 @@ def _cleanup_temp_file(state, key):
         state[key] = None
 
 
-async def _handle_psm_upload(e, state):
-    """Handle PSM file upload."""
-    _cleanup_temp_file(state, "psm_file_path")
+async def _handle_upload(e, state, file_key, path_key):
+    """Handle file upload, saving to a temp directory that preserves the original filename."""
+    _cleanup_temp_file(state, path_key)
     tmp_dir = tempfile.mkdtemp()
     tmp_path = Path(tmp_dir) / e.file.name
     await e.file.save(str(tmp_path))
-    state["psm_file"] = e.file.name
-    state["psm_file_path"] = str(tmp_path)
+    state[file_key] = e.file.name
+    state[path_key] = str(tmp_path)
     ui.notify(f"Uploaded: {e.file.name}", type="positive")
 
 
-async def _handle_ref_upload(e, state):
-    """Handle reference file upload."""
-    _cleanup_temp_file(state, "ref_file_path")
-    tmp_dir = tempfile.mkdtemp()
-    tmp_path = Path(tmp_dir) / e.file.name
-    await e.file.save(str(tmp_path))
-    state["ref_file"] = e.file.name
-    state["ref_file_path"] = str(tmp_path)
-    ui.notify(f"Uploaded: {e.file.name}", type="positive")
+async def _scroll_to(element):
+    """Smooth-scroll the viewport to the given UI element."""
+    await ui.run_javascript(
+        f'document.getElementById("c{element.id}").scrollIntoView({{behavior: "smooth"}})'
+    )
+
+
+async def _read_input_file(path, filetype="auto"):
+    """Read a PSM file off the main thread, with optional filetype override."""
+    kwargs = {"filetype": filetype} if filetype != "auto" else {}
+    return await run.io_bound(read_file, path, **kwargs)
+
+
+def _subsample(df: pd.DataFrame, max_points: int = MAX_SCATTER_POINTS) -> pd.DataFrame:
+    """Randomly subsample a DataFrame if it exceeds max_points."""
+    if len(df) <= max_points:
+        return df
+    return df.sample(n=max_points, random_state=42)
+
+
+def _add_scatter_trace(fig, df, name, color, opacity=0.3):
+    """Add a subsampled scattergl trace to a plotly figure."""
+    df = _subsample(df)
+    fig.add_scattergl(
+        x=df["observed_rt"],
+        y=df["predicted_rt"],
+        mode="markers",
+        name=name,
+        marker=dict(size=5, color=color, opacity=opacity),
+        hovertext=df["peptidoform"],
+    )
 
 
 async def _run_prediction(
@@ -392,9 +401,7 @@ async def _run_prediction(
     progress_card.visible = True
     spinner.visible = True
     results_container.clear()
-    await ui.run_javascript(
-        f'document.getElementById("c{progress_card.id}").scrollIntoView({{behavior: "smooth"}})'
-    )
+    await _scroll_to(progress_card)
 
     try:
         # --- Resolve inputs ---
@@ -403,16 +410,10 @@ async def _run_prediction(
             psm_list = _build_example_psm_list()
             psm_list_reference = psm_list  # Use same data as reference for calibration demo
         else:
-            psm_filetype = psm_type if psm_type != "auto" else None
-            kwargs = {"filetype": psm_filetype} if psm_filetype else {}
-            psm_list = await run.io_bound(read_file, state["psm_file_path"], **kwargs)
+            psm_list = await _read_input_file(state["psm_file_path"], psm_type)
             psm_list_reference = None
             if state["ref_file_path"]:
-                ref_filetype = ref_type if ref_type != "auto" else None
-                ref_kwargs = {"filetype": ref_filetype} if ref_filetype else {}
-                psm_list_reference = await run.io_bound(
-                    read_file, state["ref_file_path"], **ref_kwargs
-                )
+                psm_list_reference = await _read_input_file(state["ref_file_path"], ref_type)
 
         n_peptides = len(psm_list)
 
@@ -471,9 +472,7 @@ async def _run_prediction(
         spinner.visible = False
         status_label.text = f"Done! Predicted retention times for {len(predictions)} peptides."
         _show_results(results_container, result_df)
-        await ui.run_javascript(
-            f'document.getElementById("c{results_container.id}").scrollIntoView({{behavior: "smooth"}})'
-        )
+        await _scroll_to(results_container)
 
     except RuntimeError:
         # Client was disconnected (e.g. page reload during prediction)
@@ -522,16 +521,11 @@ def _show_results(container, result_df: pd.DataFrame):
                 ui.label("Metrics").classes("text-xl font-semibold")
                 ui.separator()
                 if has_td or has_qvalues:
-                    metric_scope = (
-                        "Calculated on accepted target PSMs only"
-                        if has_qvalues
-                        else "Calculated on target PSMs only"
+                    scope = "accepted target" if has_qvalues else "target"
+                    qv = f" (q-value ≤ {Q_VALUE_THRESHOLD})" if has_qvalues else ""
+                    ui.label(f"Calculated on {scope} PSMs only{qv}.").classes(
+                        "text-xs text-muted-hint"
                     )
-                    ui.label(
-                        metric_scope
-                        + (f" (q-value ≤ {Q_VALUE_THRESHOLD})" if has_qvalues else "")
-                        + "."
-                    ).classes("text-xs text-muted-hint")
                 with ui.row().classes("gap-8 mt-2"):
                     with ui.column().classes("items-center"):
                         ui.label(f"{mae:.4f}").classes("text-3xl font-bold")
@@ -614,16 +608,6 @@ def _show_results(container, result_df: pd.DataFrame):
             ).props('color="primary"')
 
 
-MAX_SCATTER_POINTS = 10_000
-
-
-def _subsample(df: pd.DataFrame, max_points: int = MAX_SCATTER_POINTS) -> pd.DataFrame:
-    """Randomly subsample a DataFrame if it exceeds max_points."""
-    if len(df) <= max_points:
-        return df
-    return df.sample(n=max_points, random_state=42)
-
-
 def _plot_scatter(
     valid: pd.DataFrame, has_td: bool = False, has_qvalues: bool = False
 ) -> go.Figure:
@@ -631,8 +615,7 @@ def _plot_scatter(
     fig = go.Figure()
 
     if has_td or has_qvalues:
-        # Classify PSMs into categories
-        # If TD labels exist, treat unknown as decoy (conservative); otherwise assume target
+        # Classify PSMs: treat unknown is_decoy conservatively based on whether TD labels exist
         is_decoy = valid["is_decoy"].fillna(has_td)
         if has_qvalues:
             is_accepted = (~is_decoy) & (valid["qvalue"].fillna(1.0) <= Q_VALUE_THRESHOLD)
@@ -642,49 +625,17 @@ def _plot_scatter(
             accepted_label = "Target"
         is_rejected_target = (~is_decoy) & (~is_accepted)
 
-        # Decoys in light grey
-        if is_decoy.any():
-            d = _subsample(valid[is_decoy])
-            fig.add_scattergl(
-                x=d["observed_rt"],
-                y=d["predicted_rt"],
-                mode="markers",
-                name="Decoy",
-                marker=dict(size=5, color="lightgrey", opacity=0.3),
-                hovertext=d["peptidoform"],
-            )
-        # Non-accepted targets in dark grey
-        if is_rejected_target.any():
-            r = _subsample(valid[is_rejected_target])
-            fig.add_scattergl(
-                x=r["observed_rt"],
-                y=r["predicted_rt"],
-                mode="markers",
-                name="Target (not accepted)",
-                marker=dict(size=5, color="silver", opacity=0.3),
-                hovertext=r["peptidoform"],
-            )
-        # Accepted targets in primary color
-        if is_accepted.any():
-            a = _subsample(valid[is_accepted])
-            fig.add_scattergl(
-                x=a["observed_rt"],
-                y=a["predicted_rt"],
-                mode="markers",
-                name=accepted_label,
-                marker=dict(size=5, color=PRIMARY_COLOR, opacity=0.3),
-                hovertext=a["peptidoform"],
-            )
+        # Plot each category (order: back to front)
+        for mask, name, color in [
+            (is_decoy, "Decoy", "lightgrey"),
+            (is_rejected_target, "Target (not accepted)", "silver"),
+            (is_accepted, accepted_label, PRIMARY_COLOR),
+        ]:
+            if mask.any():
+                _add_scatter_trace(fig, valid[mask], name, color)
     else:
-        v = _subsample(valid)
-        fig.add_scattergl(
-            x=v["observed_rt"],
-            y=v["predicted_rt"],
-            mode="markers",
-            marker=dict(size=5, color=PRIMARY_COLOR, opacity=0.3),
-            hovertext=v["peptidoform"],
-            showlegend=False,
-        )
+        _add_scatter_trace(fig, valid, None, PRIMARY_COLOR)
+        fig.update_traces(showlegend=False)
 
     # Diagonal reference line
     axis_min = min(valid["observed_rt"].min(), valid["predicted_rt"].min())
