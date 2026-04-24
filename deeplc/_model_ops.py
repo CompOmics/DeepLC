@@ -2,6 +2,8 @@
 
 import copy
 import logging
+import sys
+import types
 from collections.abc import Callable
 from os import PathLike
 from pathlib import Path
@@ -17,10 +19,26 @@ from rich.progress import (
 )
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from deeplc._architecture import DeepLCModel
+from deeplc._architecture import BatchedHeads, DeepLCModel, MultitaskDeepLCModel
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_legacy_multitask_module() -> None:
+    """Register a backwards-compatibility shim for multitask_model.pt.
+
+    The bundled multitask checkpoint was saved when MultitaskDeepLCModel and
+    BatchedHeads lived in a top-level module called ``multitask_model``.  That
+    module no longer exists; the classes now live in ``deeplc._architecture``.
+    Registering a shim in ``sys.modules`` before ``torch.load`` lets pickle
+    resolve the old import paths without re-saving the checkpoint.
+    """
+    if "multitask_model" not in sys.modules:
+        shim = types.ModuleType("multitask_model")
+        shim.MultitaskDeepLCModel = MultitaskDeepLCModel  # type: ignore[attr-defined]
+        shim.BatchedHeads = BatchedHeads  # type: ignore[attr-defined]
+        sys.modules["multitask_model"] = shim
 
 
 def load_model(
@@ -33,6 +51,7 @@ def load_model(
 
     # Load model from file if a path is provided
     if isinstance(model, (str, PathLike, Path)):
+        _patch_legacy_multitask_module()
         loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
     elif isinstance(model, torch.nn.Module):
         loaded_model = model

@@ -423,3 +423,69 @@ class DeepLCModel(nn.Module):
         output = self.final_network(concatenated)
 
         return output
+
+
+class BatchedHeads(nn.Module):
+    """Parallel output heads sharing a hidden projection.
+
+    Each head maps the shared trunk output to a scalar via a two-step
+    computation: a batched linear projection followed by a per-head dot
+    product with a learned weight vector.
+
+    Parameters
+    ----------
+    input_size
+        Size of the input feature vector (output of shared trunk).
+    n_heads
+        Number of parallel output heads.
+    hidden
+        Hidden dimension per head (default: 32).
+    """
+
+    def __init__(self, input_size: int, n_heads: int, hidden: int = 32):
+        super().__init__()
+        self.layer1 = nn.Linear(input_size, n_heads * hidden)
+        self.w2 = nn.Parameter(torch.zeros(n_heads, hidden))
+        self.b2 = nn.Parameter(torch.zeros(n_heads))
+        nn.init.normal_(self.w2, std=0.05)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.layer1(x)                      # (batch, n_heads * hidden)
+        n_heads = self.b2.shape[0]
+        h = torch.relu(h.view(h.shape[0], n_heads, h.shape[1] // n_heads))
+        return (h * self.w2.unsqueeze(0)).sum(dim=-1) + self.b2  # (batch, n_heads)
+
+
+class MultitaskDeepLCModel(nn.Module):
+    """Multi-task DeepLC backbone predicting RT across multiple LC systems.
+
+    Shares the same four input branches as :class:`DeepLCModel` but replaces
+    the single-output final network with a shared trunk feeding into
+    :class:`BatchedHeads`, producing one RT value per LC system.
+
+    This class is primarily used for loading pre-trained checkpoints via
+    ``torch.load``.  The child modules (``branch_a``, ``branch_b``,
+    ``branch_c``, ``branch_d``, ``shared_trunk``, ``heads``) are restored
+    from the checkpoint state dict and do not need to be constructed here.
+    """
+
+    def forward(
+        self,
+        x_atom: torch.Tensor,
+        x_atom_sum: torch.Tensor,
+        x_global: torch.Tensor,
+        x_one_hot: torch.Tensor,
+    ) -> torch.Tensor:
+        x_atom     = x_atom.transpose(1, 2)
+        x_atom_sum = x_atom_sum.transpose(1, 2)
+        x_one_hot  = x_one_hot.transpose(1, 2)
+        concatenated = torch.cat(
+            [
+                self.branch_a(x_atom),      # type: ignore[attr-defined]
+                self.branch_b(x_atom_sum),  # type: ignore[attr-defined]
+                self.branch_c(x_global),    # type: ignore[attr-defined]
+                self.branch_d(x_one_hot),   # type: ignore[attr-defined]
+            ],
+            dim=1,
+        )
+        return self.heads(self.shared_trunk(concatenated))  # type: ignore[attr-defined]
