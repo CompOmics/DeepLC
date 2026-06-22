@@ -154,7 +154,7 @@ def calibrate(
     if _is_multitask_output(source_rt_cal):
         selected_head_idx = _best_correlating_head(source_rt_cal, target_rt_cal)
         source_rt_cal = source_rt_cal[:, selected_head_idx]
-        setattr(calibration, "selected_head_idx", int(selected_head_idx))
+        calibration.selected_head_idx = int(selected_head_idx)
 
     calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
