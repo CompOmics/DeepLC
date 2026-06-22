@@ -341,7 +341,10 @@ def finetune(
     )
 
     sample_features, _ = training_dataset[0]
-    sample_features = [feature.unsqueeze(0).to(next(loaded_model.parameters()).device) for feature in sample_features]
+    sample_features = [
+        feature.unsqueeze(0).to(next(loaded_model.parameters()).device)
+        for feature in sample_features
+    ]
     with torch.no_grad():
         sample_output = loaded_model(*sample_features)
 

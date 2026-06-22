@@ -450,7 +450,7 @@ class BatchedHeads(nn.Module):
         nn.init.normal_(self.w2, std=0.05)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.layer1(x)                      # (batch, n_heads * hidden)
+        h = self.layer1(x)  # (batch, n_heads * hidden)
         n_heads = self.b2.shape[0]
         h = torch.relu(h.view(h.shape[0], n_heads, h.shape[1] // n_heads))
         return (h * self.w2.unsqueeze(0)).sum(dim=-1) + self.b2  # (batch, n_heads)
@@ -476,15 +476,15 @@ class MultitaskDeepLCModel(nn.Module):
         x_global: torch.Tensor,
         x_one_hot: torch.Tensor,
     ) -> torch.Tensor:
-        x_atom     = x_atom.transpose(1, 2)
+        x_atom = x_atom.transpose(1, 2)
         x_atom_sum = x_atom_sum.transpose(1, 2)
-        x_one_hot  = x_one_hot.transpose(1, 2)
+        x_one_hot = x_one_hot.transpose(1, 2)
         concatenated = torch.cat(
             [
-                self.branch_a(x_atom),      # type: ignore[attr-defined]
+                self.branch_a(x_atom),  # type: ignore[attr-defined]
                 self.branch_b(x_atom_sum),  # type: ignore[attr-defined]
-                self.branch_c(x_global),    # type: ignore[attr-defined]
-                self.branch_d(x_one_hot),   # type: ignore[attr-defined]
+                self.branch_c(x_global),  # type: ignore[attr-defined]
+                self.branch_d(x_one_hot),  # type: ignore[attr-defined]
             ],
             dim=1,
         )
