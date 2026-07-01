@@ -101,7 +101,7 @@ def _select_by_qvalue(candidates: PSMList) -> PSMList:
     qvalues = np.array(
         [psm.qvalue if psm.qvalue is not None else np.inf for psm in candidates.psm_list]
     )
-    mask = qvalues < Q_VALUE_THRESHOLD
+    mask = qvalues <= Q_VALUE_THRESHOLD
     return candidates[mask]
 
 
