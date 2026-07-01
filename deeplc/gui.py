@@ -1,17 +1,20 @@
 """NiceGUI-based web interface for DeepLC."""
 
 import contextlib
+import gzip
+import importlib.resources
 import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from nicegui import app, run, ui
-from psm_utils import PSM, PSMList
+from psm_utils import PSMList
 from psm_utils.io import READERS, read_file
 
 import deeplc.core
@@ -21,44 +24,35 @@ from deeplc._reference_selection import Q_VALUE_THRESHOLD
 logger = logging.getLogger(__name__)
 
 PSM_FILETYPES = list(READERS.keys())
-LOGO_PATH = Path(__file__).resolve().parent.parent / "img" / "deeplc_logo.svg"
 PRIMARY_COLOR = "#763737"
 UPLOAD_ACCEPT = ".csv,.tsv,.txt,.peprec,.mzid,.pepXML,.idXML,.parquet"
 MAX_SCATTER_POINTS = 10_000
 
-EXAMPLE_PEPTIDES = [
-    ("AAGPSLSHTSGGTQSK/2", 12.16),
-    ("AAINQK[Acetyl]LIETGER/2", 34.10),
-    ("AANDAGYFNDEM[Oxidation]APIEVK[Acetyl]TK/3", 37.38),
-    ("AAPFSPAEK/2", 16.89),
-    ("AAYFGILEK/2", 30.93),
-    ("ADTQLDESSEQIDEEELTSK/2", 28.33),
-    ("AGFAGDDAPR/2", 7.57),
-    ("AHQVVEDGYEFFAK/2", 28.86),
-    ("AIQEYNQDK/2", 8.44),
-    ("ALDQFVNFSEQK/2", 32.42),
-]
+EXAMPLE_PREVIEW_COLUMNS = ["peptidoform", "retention_time", "score", "qvalue", "is_decoy"]
 
 
 def create_app():
     """Create and configure the NiceGUI app."""
 
-    # Serve logo
-    if LOGO_PATH.exists():
-        app.add_static_files("/static", str(LOGO_PATH.parent))
-
-    # State
-    state = {
-        "psm_file": None,
-        "psm_file_path": None,
-        "ref_file": None,
-        "ref_file_path": None,
-        "use_example": False,
-        "result_df": None,
-    }
+    _logo_ref = importlib.resources.files("deeplc.package_data.gui_images").joinpath(
+        "deeplc_logo.svg"
+    )
+    with importlib.resources.as_file(_logo_ref) as _logo_path:
+        logo_available = _logo_path.exists()
+        if logo_available:
+            app.add_static_files("/static", str(_logo_path.parent))
 
     @ui.page("/")
     def main_page():
+        # Per-session state (each browser tab gets its own)
+        state = {
+            "psm_file": None,
+            "psm_file_path": None,
+            "ref_file": None,
+            "ref_file_path": None,
+            "use_example": False,
+            "result_df": None,
+        }
         # --- Set primary color, load Font Awesome, and define muted text classes ---
         ui.colors(primary=PRIMARY_COLOR)
         ui.add_head_html(
@@ -95,7 +89,7 @@ def create_app():
         with ui.column().classes("w-full max-w-4xl mx-auto p-6 gap-6"):
             # --- Branding / hero ---
             with ui.card().classes("w-full"), ui.row().classes("items-center gap-6"):
-                if LOGO_PATH.exists():
+                if logo_available:
                     ui.image("/static/deeplc_logo.svg").classes("w-24")
                 with ui.column().classes("gap-1"):
                     ui.label("DeepLC").classes("text-3xl font-bold")
@@ -125,20 +119,22 @@ def create_app():
                     "or upload your own files below."
                 ).classes("text-sm text-muted-secondary mt-1")
 
-                example_switch = ui.switch("Use example data").on_value_change(
+                ui.switch("Use example data").on_value_change(
                     lambda e: _toggle_example(e.value, state, upload_card)
                 )
 
                 with ui.expansion("Preview example data", icon="visibility").classes("w-full"):
+                    _preview_df = (
+                        _load_example_df()
+                        .head(10)[EXAMPLE_PREVIEW_COLUMNS]
+                        .round({"retention_time": 2, "score": 2, "qvalue": 5})  # type: ignore[arg-type]
+                    )
                     ui.table(
                         columns=[
                             {"name": c, "label": c, "field": c, "align": "left"}
-                            for c in ["peptidoform", "retention_time"]
+                            for c in EXAMPLE_PREVIEW_COLUMNS
                         ],
-                        rows=[
-                            {"peptidoform": pf, "retention_time": rt}
-                            for pf, rt in EXAMPLE_PEPTIDES
-                        ],
+                        rows=_preview_df.to_dict(orient="records"),  # type: ignore[call-overload]
                     ).classes("w-full").props("dense")
 
             # --- Input Section ---
@@ -150,10 +146,10 @@ def create_app():
                 with ui.column().classes("gap-1 "):
                     ui.markdown(
                         "Upload a file with peptide-spectrum matches in any format "
-                        "supported by [psm_utils](https://psm-utils.readthedocs.io/en/stable/api/psm_utils.io/), "
+                        "supported by [psm_utils](https://psm-utils.readthedocs.io/en/stable/api/psm_utils.io/), "  # noqa: E501
                         "including MaxQuant msms.txt, Sage, Percolator, MSAmanda, "
                         "mzIdentML, pepXML, and more. A generic "
-                        "[TSV format](https://psm-utils.readthedocs.io/en/v1.5.2/api/psm_utils.io/#module-psm_utils.io.tsv) "
+                        "[TSV format](https://psm-utils.readthedocs.io/en/v1.5.2/api/psm_utils.io/#module-psm_utils.io.tsv) "  # noqa: E501
                         "is also accepted, requiring `spectrum_id` and `peptidoform` columns, "
                         "and optionally `retention_time` (for calibration), `score`, `qvalue`, "
                         "and `is_decoy` (for auto-calibration)."
@@ -296,24 +292,35 @@ def create_app():
             ).classes("!text-white")
 
 
-def _toggle_example(use_example: bool, state: dict, upload_card):
+def _toggle_example(use_example: bool | None, state: dict, upload_card):
     """Toggle example data mode and disable/enable upload card."""
-    state["use_example"] = use_example
+    state["use_example"] = bool(use_example)
     upload_card.visible = not use_example
 
 
-def _build_example_psm_list() -> PSMList:
-    """Build a PSMList from the built-in example peptides."""
-    return PSMList(
-        psm_list=[
-            PSM(
-                spectrum_id=str(i),
-                peptidoform=peptidoform,
-                retention_time=rt,
-            )
-            for i, (peptidoform, rt) in enumerate(EXAMPLE_PEPTIDES)
-        ]
+def _load_example_df() -> pd.DataFrame:
+    """Load the bundled example PSM file as a DataFrame."""
+    ref = importlib.resources.files("deeplc.package_data.examples").joinpath(
+        "example_psms.tsv.gz"
     )
+    with importlib.resources.as_file(ref) as path:
+        return pd.read_csv(path, sep="\t", compression="gzip")
+
+
+def _build_example_psm_list() -> PSMList:
+    """Load the bundled example PSM file as a PSMList."""
+    ref = importlib.resources.files("deeplc.package_data.examples").joinpath(
+        "example_psms.tsv.gz"
+    )
+    with importlib.resources.as_file(ref) as gz_path, gzip.open(gz_path, "rb") as f_gz:
+        data = f_gz.read()
+    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+    try:
+        return read_file(tmp_path, filetype="tsv")
+    finally:
+        os.unlink(tmp_path)
 
 
 def _cleanup_temp_file(state, key):
@@ -345,10 +352,10 @@ async def _scroll_to(element):
     )
 
 
-async def _read_input_file(path, filetype="auto"):
+async def _read_input_file(path: str, filetype: str = "auto") -> PSMList:
     """Read a PSM file off the main thread, with optional filetype override."""
     kwargs = {"filetype": filetype} if filetype != "auto" else {}
-    return await run.io_bound(read_file, path, **kwargs)
+    return await run.io_bound(read_file, path, **kwargs)  # type: ignore[return-value]
 
 
 def _subsample(df: pd.DataFrame, max_points: int = MAX_SCATTER_POINTS) -> pd.DataFrame:
@@ -408,7 +415,7 @@ async def _run_prediction(
         status_label.text = "Reading input files..."
         if state.get("use_example"):
             psm_list = _build_example_psm_list()
-            psm_list_reference = psm_list  # Use same data as reference for calibration demo
+            psm_list_reference = None
         else:
             psm_list = await _read_input_file(state["psm_file_path"], psm_type)
             psm_list_reference = None
@@ -422,7 +429,9 @@ async def _run_prediction(
             from deeplc._reference_selection import select_reference_psms
 
             status_label.text = "Selecting reference PSMs for auto-calibration..."
-            psm_list_reference = await run.io_bound(select_reference_psms, psm_list)
+            psm_list_reference = cast(
+                PSMList, await run.io_bound(select_reference_psms, psm_list)
+            )
             ui.notify(
                 f"Auto-calibration: selected {len(psm_list_reference)} reference PSMs.",
                 type="positive",
@@ -431,30 +440,40 @@ async def _run_prediction(
         n_ref = len(psm_list_reference) if psm_list_reference else 0
 
         # --- Predicting ---
+        predictions: np.ndarray
         if psm_list_reference and finetune:
             status_label.text = (
                 f"Fine-tuning model on {n_ref} reference peptides, "
                 f"then predicting for {n_peptides} peptides..."
             )
-            predictions = await run.io_bound(
-                deeplc.core.finetune_and_predict,
-                psm_list=psm_list,
-                psm_list_reference=psm_list_reference,
+            predictions = cast(
+                np.ndarray,
+                await run.io_bound(
+                    deeplc.core.finetune_and_predict,
+                    psm_list=psm_list,
+                    psm_list_reference=psm_list_reference,
+                ),
             )
         elif psm_list_reference:
             status_label.text = (
                 f"Predicting for {n_peptides} peptides with {n_ref} reference peptides..."
             )
-            predictions = await run.io_bound(
-                deeplc.core.predict_and_calibrate,
-                psm_list=psm_list,
-                psm_list_reference=psm_list_reference,
+            predictions = cast(
+                np.ndarray,
+                await run.io_bound(
+                    deeplc.core.predict_and_calibrate,
+                    psm_list=psm_list,
+                    psm_list_reference=psm_list_reference,
+                ),
             )
         else:
             status_label.text = f"Predicting for {n_peptides} peptides..."
-            predictions = await run.io_bound(
-                deeplc.core.predict,
-                psm_list=psm_list,
+            predictions = cast(
+                np.ndarray,
+                await run.io_bound(
+                    deeplc.core.predict,
+                    psm_list=psm_list,
+                ),
             )
 
         # --- Build result DataFrame ---
@@ -500,13 +519,15 @@ def _show_results(container, result_df: pd.DataFrame):
     has_qvalues = bool(result_df["qvalue"].notna().any())
 
     # Determine which PSMs to use for metrics
-    valid = result_df.dropna(subset=["observed_rt", "predicted_rt"])
+    valid: pd.DataFrame = result_df.dropna(subset=["observed_rt", "predicted_rt"])
     if has_td or has_qvalues:
         # Use accepted targets only for metrics
         # If TD labels exist, treat unknown as decoy (conservative); otherwise assume target
-        accepted = valid[~valid["is_decoy"].fillna(has_td)]
+        accepted: pd.DataFrame = cast(pd.DataFrame, valid[~valid["is_decoy"].fillna(has_td)])
         if has_qvalues:
-            accepted = accepted[accepted["qvalue"].fillna(1.0) <= Q_VALUE_THRESHOLD]
+            accepted = cast(
+                pd.DataFrame, accepted[accepted["qvalue"].fillna(1.0) <= Q_VALUE_THRESHOLD]
+            )
     else:
         accepted = valid
 
@@ -720,7 +741,7 @@ def _plot_baseline_comparison(valid: pd.DataFrame) -> go.Figure | None:
         line_color="red",
         annotation_text=f"Your result (better than {percentile}% of runs)",
         annotation_position="top left",
-        row=1,
+        row=1,  # type: ignore[call-arg]
     )
     fig.update_xaxes(range=[x_min, x_max])
     fig.update_layout(
@@ -733,11 +754,23 @@ def _plot_baseline_comparison(valid: pd.DataFrame) -> go.Figure | None:
     return fig
 
 
-def main():
+def main(native=False):
     """Run the DeepLC GUI."""
     logging.basicConfig(level=logging.INFO)
     create_app()
-    ui.run(title="DeepLC", favicon="/static/deeplc_logo.svg", port=8080, reload=False)
+    _logo_ref = importlib.resources.files("deeplc.package_data.gui_images").joinpath(
+        "deeplc_logo.svg"
+    )
+    with importlib.resources.as_file(_logo_ref) as _logo_path:
+        favicon: Path | None = _logo_path if _logo_path.exists() else None
+    ui.run(
+        title="DeepLC",
+        favicon=favicon,
+        port=8080,
+        reload=False,
+        native=native,
+        show=native,
+    )
 
 
 if __name__ in {"__main__", "__mp_main__"}:

@@ -1,7 +1,17 @@
 """Main command line interface to DeepLC."""
 
 import logging
+import multiprocessing
+import os
+import sys
 from pathlib import Path
+
+# PyInstaller console=False sets sys.stdout/stderr to None; redirect to devnull
+# so NiceGUI/pywebview don't fail silently on startup.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")  # noqa: SIM115
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 import click
 import pandas as pd
@@ -114,7 +124,7 @@ def _validate_finetune(ctx, param, value):
     default=False,
     callback=_validate_finetune,
     expose_value=True,
-    help="Fine-tune the model to the reference before predicting. Requires --reference or --auto-calibrate.",
+    help="Fine-tune the model to the reference before predicting. Requires --reference or --auto-calibrate.",  # noqa: E501
 )
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
 @click.option(
@@ -160,11 +170,12 @@ def predict(
 
 
 @cli.command()
-def gui():
+@click.option("--native", is_flag=True, default=False, help="Run as native desktop app.")
+def gui(native):
     """Launch the DeepLC graphical user interface."""
     from deeplc.gui import main as gui_main
 
-    gui_main()
+    gui_main(native=native)
 
 
 def main():
@@ -172,4 +183,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
