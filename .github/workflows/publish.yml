@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run: build and test everything, but skip publishing to PyPI, GHCR, and GitHub releases'
+        description: "Dry run: build and test everything, but skip publishing to PyPI, GHCR, and GitHub releases"
         type: boolean
         default: true
 
@@ -23,7 +23,7 @@ jobs:
         with:
           python-version-file: "pyproject.toml"
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
