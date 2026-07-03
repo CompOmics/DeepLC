@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- NiceGUI-based web interface, launchable as a browser app (`deeplc gui`) or native desktop window (`deeplc gui --native`)
+- `[gui]` optional dependency group (nicegui, plotly, pywebview) for desktop use
+- `[web]` optional dependency group (nicegui, plotly) for server/Docker use
+- Docker image for containerized web server deployment
+- Updated Windows installer (PyInstaller and Inno Setup) to new GUI
+- `predict_and_calibrate()` core function combining prediction and calibration in one call, with optional automatic reference PSM selection
+- `finetune_and_predict()` core function for transfer learning followed by calibrated prediction
+- Automatic calibration reference selection from input PSMs using q-value filtering or top-scoring fraction
+- Publish workflow with Windows installer build, Docker image build, and dry-run mode for CI testing without publishing
+
+### Changed
+
+- CLI restructured into `predict` and `gui` subcommands
+- Example datasets updated from legacy CSV format to psm_utils TSV and peprec formats
+
 ## [4.0.0-alpha.1]
 
 ### Changed
