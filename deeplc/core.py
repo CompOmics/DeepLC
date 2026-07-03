@@ -23,21 +23,7 @@ from deeplc.data import DeepLCDataset, split_datasets
 LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_NAME = "full_hc_PXD005573_pub_1fd8363d9af9dcad3be7553c39396960.pt"
-DEFAULT_MODEL_FALLBACK = DEEPLC_DIR / "package_data" / "models" / DEFAULT_MODEL_NAME
-DEFAULT_MULTITASK_MODEL_PACKAGED = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
-DEFAULT_MULTITASK_MODEL_WORKSPACE = (
-    DEEPLC_DIR.parent.parent / "multitask_output_200ep" / "multitask_model.pt"
-)
-DEFAULT_MODEL = (
-    DEFAULT_MULTITASK_MODEL_PACKAGED
-    if DEFAULT_MULTITASK_MODEL_PACKAGED.exists()
-    else (
-        DEFAULT_MULTITASK_MODEL_WORKSPACE
-        if DEFAULT_MULTITASK_MODEL_WORKSPACE.exists()
-        else DEFAULT_MODEL_FALLBACK
-    )
-)
+DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
 
 
 def predict(
@@ -204,12 +190,12 @@ def predict_and_calibrate(
         selected_head_idx = getattr(calibration, "selected_head_idx", None)
         if selected_head_idx is None:
             ref_pred_rt = predict(
-                psm_list=psm_list_reference,
+                psm_list=parsed_psm_list_ref,
                 model=model,
                 predict_kwargs=predict_kwargs,
             )
             if _is_multitask_output(ref_pred_rt):
-                ref_targets = np.array(psm_list_reference["retention_time"], dtype=np.float32)
+                ref_targets = np.array(parsed_psm_list_ref["retention_time"], dtype=np.float32)
                 selected_head_idx = _best_correlating_head(ref_pred_rt, ref_targets)
             else:
                 selected_head_idx = 0

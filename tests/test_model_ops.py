@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 
 from deeplc import _model_ops
 from deeplc._architecture import BatchedHeads, MultitaskDeepLCModel
-from deeplc.core import DEFAULT_MULTITASK_MODEL_PACKAGED
+from deeplc.core import DEFAULT_MODEL
 from deeplc.data import split_datasets
 
 
@@ -64,19 +64,23 @@ def test_train_rejects_empty_validation_loader():
         )
 
 
+@pytest.mark.skipif(
+    not DEFAULT_MODEL.exists(),
+    reason="multitask model not bundled",
+)
 def test_load_multitask_model_without_prior_shim():
     """multitask_model.pt must load even when the legacy module is not pre-registered."""
     # Remove any previously registered shim so the test is self-contained.
     sys.modules.pop("multitask_model", None)
 
-    model = _model_ops.load_model(DEFAULT_MULTITASK_MODEL_PACKAGED, device="cpu")
+    model = _model_ops.load_model(DEFAULT_MODEL, device="cpu")
 
     assert isinstance(model, MultitaskDeepLCModel)
 
-    x_atom   = torch.zeros(2, 60, 6)
-    x_sum    = torch.zeros(2, 30, 6)
+    x_atom = torch.zeros(2, 60, 6)
+    x_sum = torch.zeros(2, 30, 6)
     x_global = torch.zeros(2, 55)
-    x_hc     = torch.zeros(2, 60, 20)
+    x_hc = torch.zeros(2, 60, 20)
     with torch.no_grad():
         out = model(x_atom, x_sum, x_global, x_hc)
 
