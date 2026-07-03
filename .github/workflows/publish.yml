@@ -60,6 +60,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Sanitize version tag
+        id: tag
+        shell: bash
+        run: echo "tag=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -83,7 +88,7 @@ jobs:
         run: dist/deeplc/deeplc.exe predict --help
 
       - name: Run Inno Setup
-        run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{ github.ref_name }}
+        run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{ steps.tag.outputs.tag }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
