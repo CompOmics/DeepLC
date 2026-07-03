@@ -11,13 +11,13 @@ import torch
 from psm_utils import PSM, Peptidoform, PSMList
 
 from deeplc import _model_ops
+from deeplc._architecture import MultitaskAdapter
 from deeplc._reference_selection import select_reference_psms
 from deeplc.calibration import (
     Calibration,
     SplineTransformerCalibration,
 )
 from deeplc.data import DeepLCDataset, split_datasets
-from deeplc.multitask import MultitaskAdapter
 
 LOGGER = logging.getLogger(__name__)
 
