@@ -300,18 +300,14 @@ def _toggle_example(use_example: bool | None, state: dict, upload_card):
 
 def _load_example_df() -> pd.DataFrame:
     """Load the bundled example PSM file as a DataFrame."""
-    ref = importlib.resources.files("deeplc.package_data.examples").joinpath(
-        "example_psms.tsv.gz"
-    )
+    ref = importlib.resources.files("deeplc.package_data.examples").joinpath("example_psms.tsv.gz")
     with importlib.resources.as_file(ref) as path:
         return pd.read_csv(path, sep="\t", compression="gzip")
 
 
 def _build_example_psm_list() -> PSMList:
     """Load the bundled example PSM file as a PSMList."""
-    ref = importlib.resources.files("deeplc.package_data.examples").joinpath(
-        "example_psms.tsv.gz"
-    )
+    ref = importlib.resources.files("deeplc.package_data.examples").joinpath("example_psms.tsv.gz")
     with importlib.resources.as_file(ref) as gz_path, gzip.open(gz_path, "rb") as f_gz:
         data = f_gz.read()
     with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as tmp:
@@ -429,9 +425,7 @@ async def _run_prediction(
             from deeplc._reference_selection import select_reference_psms
 
             status_label.text = "Selecting reference PSMs for auto-calibration..."
-            psm_list_reference = cast(
-                PSMList, await run.io_bound(select_reference_psms, psm_list)
-            )
+            psm_list_reference = cast(PSMList, await run.io_bound(select_reference_psms, psm_list))
             ui.notify(
                 f"Auto-calibration: selected {len(psm_list_reference)} reference PSMs.",
                 type="positive",
