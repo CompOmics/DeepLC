@@ -1,3 +1,11 @@
+# Local
+*.ipynb
+examples/datasets/*_predictions.csv
+
+# IDE
+.vscode/
+.claude/
+
 # DeepLC
 data/
 ./*.png

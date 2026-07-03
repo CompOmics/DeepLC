@@ -11,6 +11,7 @@ import torch
 from psm_utils import PSM, Peptidoform, PSMList
 
 from deeplc import _model_ops
+from deeplc._reference_selection import select_reference_psms
 from deeplc.calibration import (
     Calibration,
     SplineTransformerCalibration,
@@ -163,7 +164,7 @@ def calibrate(
 
 def predict_and_calibrate(
     psm_list: PSMList | list[PSM | Peptidoform | str],
-    psm_list_reference: PSMList,
+    psm_list_reference: PSMList | list[PSM | Peptidoform | str] | None = None,
     model: torch.nn.Module | PathLike | str | None = None,
     calibration: Calibration | None = None,
     predict_kwargs: dict | None = None,
@@ -176,7 +177,10 @@ def predict_and_calibrate(
     psm_list
         List of PSMs to predict retention times for.
     psm_list_reference
-        List of PSMs to use as reference for calibration.
+        List of PSMs to use as reference for calibration. If None, the best PSMs are
+        automatically selected from ``psm_list`` (auto-calibration). This requires that the input
+        PSM list contains observed retention times, score and decoy status to select the best PSMs
+        for auto-calibration.
     model
         Trained model or path to model file.
     calibration
@@ -190,10 +194,17 @@ def predict_and_calibrate(
         Calibrated retention time predictions.
 
     """
+    parsed_psm_list = _parse_psms(psm_list)
+
+    if psm_list_reference is None:
+        parsed_psm_list_ref = select_reference_psms(parsed_psm_list)
+    else:
+        parsed_psm_list_ref = _parse_psms(psm_list_reference)
+
     # Predict initial retention times
     LOGGER.info("Predicting retention times...")
     predicted_rt = predict(
-        psm_list=_parse_psms(psm_list),
+        psm_list=parsed_psm_list,
         model=model,
         predict_kwargs=predict_kwargs,
     )
@@ -206,7 +217,7 @@ def predict_and_calibrate(
     # Fit calibration if not already fitted
     if calibration is None or not calibration.is_fitted:
         calibration = calibrate(
-            psm_list_reference=psm_list_reference,
+            psm_list_reference=parsed_psm_list_ref,
             model=model,
             calibration=calibration,
             predict_kwargs=predict_kwargs,
@@ -237,7 +248,7 @@ def predict_and_calibrate(
 
 def finetune_and_predict(
     psm_list: PSMList | list[PSM | Peptidoform | str],
-    psm_list_reference: PSMList,
+    psm_list_reference: PSMList | list[PSM | Peptidoform | str] | None = None,
     model: torch.nn.Module | PathLike | str | None = None,
     train_kwargs: dict | None = None,
     predict_kwargs: dict | None = None,
@@ -250,7 +261,10 @@ def finetune_and_predict(
     psm_list
         List of PSMs to predict retention times for.
     psm_list_reference
-        List of PSMs to use as reference for fine-tuning and calibration.
+        List of PSMs to use as reference for calibration. If None, the best PSMs are automatically
+        selected from ``psm_list`` (auto-calibration). This requires that the input PSM list
+        contains observed retention times, score and decoy status to select the best PSMs for
+        auto-calibration.
     model
         Trained model or path to model file.
     train_kwargs
@@ -264,9 +278,16 @@ def finetune_and_predict(
         Calibrated retention time predictions after fine-tuning.
 
     """
+    parsed_psm_list = _parse_psms(psm_list)
+
+    if psm_list_reference is None:
+        parsed_psm_list_ref = select_reference_psms(parsed_psm_list)
+    else:
+        parsed_psm_list_ref = _parse_psms(psm_list_reference)
+
     # Fine-tune the model
     finetuned_model = finetune(
-        psm_list_reference=psm_list_reference,
+        psm_list_reference=parsed_psm_list_ref,
         model=model,
         train_kwargs=train_kwargs,
     )
@@ -274,7 +295,7 @@ def finetune_and_predict(
     # Predict retention times with fine-tuned model
     LOGGER.info("Predicting retention times with fine-tuned model...")
     predicted_rt = predict(
-        psm_list=_parse_psms(psm_list),
+        psm_list=parsed_psm_list,
         model=finetuned_model,
         predict_kwargs=predict_kwargs,
     )
@@ -282,7 +303,7 @@ def finetune_and_predict(
     # Fit calibration with simple PiecewiseLinearCalibration to the fine-tuned model predictions
     LOGGER.info("Fitting calibration with fine-tuned model predictions...")
     calibration = calibrate(
-        psm_list_reference=psm_list_reference,
+        psm_list_reference=parsed_psm_list_ref,
         model=finetuned_model,
         predict_kwargs=predict_kwargs,
     )
