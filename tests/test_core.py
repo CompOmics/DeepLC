@@ -61,6 +61,9 @@ def test_predict_and_calibrate_returns_calibrated_values_differ_from_raw():
     calibrated = deeplc.core.predict_and_calibrate(
         _make_psm_list(_PEPTIDES), psm_list_reference=reference
     )
+    # Multitask model returns [n, n_heads]; select first head for comparison
+    if raw.ndim == 2:
+        raw = raw[:, 0]
     assert not np.allclose(raw, calibrated)
 
 
