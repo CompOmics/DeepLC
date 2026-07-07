@@ -2,12 +2,12 @@
 
 
 class DeepLCError(Exception):
-    pass
+    """Base class for DeepLC exceptions."""
 
 
 class CalibrationError(DeepLCError):
-    pass
+    """Raised when calibration fails."""
 
 
 class ReferenceSelectionError(DeepLCError):
-    pass
+    """Raised when reference PSM selection fails."""

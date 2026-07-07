@@ -1,3 +1,5 @@
+"""Plotting utilities for DeepLC results."""
+
 # TODO: Use package data; potentially move to MS²Rescore?
 
 from pathlib import Path
@@ -70,8 +72,7 @@ def distribution_baseline(
     observed_column: str = "Observed retention time",
 ) -> go.Figure:
     """
-    Plot a distribution plot of the relative mean absolute error of the current
-    DeepLC performance compared to the baseline performance.
+    Plot relative MAE distribution comparing current DeepLC performance to baseline.
 
     Parameters
     ----------

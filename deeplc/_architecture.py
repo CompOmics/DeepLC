@@ -1,8 +1,8 @@
 """
 PyTorch architecture definitions for DeepLC.
 
-This module contains the neural network architectures used by DeepLC for
-predicting peptide retention times based on atomic composition and other features.
+This module contains the neural network architectures used by DeepLC for predicting peptide
+retention times based on atomic composition and other features.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ class LeakyReLUSaturation(nn.Module):
     """
     Leaky ReLU activation with saturation (max value clipping).
 
-    This custom activation function applies leaky ReLU followed by clamping
-    to a maximum value, matching the original TensorFlow implementation's behavior.
+    This custom activation function applies leaky ReLU followed by clamping to a maximum value,
+    matching the original TensorFlow implementation's behavior.
 
     Parameters
     ----------
@@ -153,8 +153,8 @@ class OneHotBranch(nn.Module):
     """
     Convolutional branch for processing one-hot encoded amino acid sequences.
 
-    This branch uses tanh activation instead of leaky ReLU and processes
-    one-hot encoded amino acid features.
+    This branch uses tanh activation instead of leaky ReLU and processes one-hot encoded amino
+    acid features.
 
     Parameters
     ----------
@@ -212,9 +212,8 @@ class BatchedHeads(nn.Module):
     """
     Parallel output heads sharing a hidden projection.
 
-    Each head maps the shared trunk output to a scalar via a two-step
-    computation: a batched linear projection followed by a per-head dot
-    product with a learned weight vector.
+    Each head maps the shared trunk output to a scalar via a two-step computation: a batched
+    linear projection followed by a per-head dot product with a learned weight vector.
 
     Parameters
     ----------
@@ -245,14 +244,14 @@ class DeepLCModel(nn.Module):
     """
     DeepLC model for peptide retention time prediction.
 
-    Four parallel input branches — per-position atomic composition CNN, summed atomic
-    composition CNN, global feature dense network, and one-hot amino acid CNN — are
-    concatenated and passed through a shared dense trunk. Outputs are projected by
-    :class:`BatchedHeads` to ``[batch, n_heads]``.
+    Four parallel input branches — per-position atomic composition CNN, summed atomic composition
+    CNN, global feature dense network, and one-hot amino acid CNN — are concatenated and passed
+    through a shared dense trunk. Outputs are projected by :class:`BatchedHeads` to ``[batch,
+    n_heads]``.
 
-    When ``n_heads > 1`` the model is a multitask backbone trained across multiple LC
-    setups. Call :meth:`add_adapter` to attach a fine-tuning MLP that maps the head
-    vector to a single RT value ``[batch, 1]``.
+    When ``n_heads > 1`` the model is a multitask backbone trained across multiple LC setups.
+    Call :meth:`add_adapter` to attach a fine-tuning MLP that maps the head vector to a single
+    RT value ``[batch, 1]``.
 
 
     Parameters

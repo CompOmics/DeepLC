@@ -1,3 +1,5 @@
+"""Dataset classes and utilities for DeepLC."""
+
 from __future__ import annotations
 
 import logging
@@ -56,10 +58,12 @@ class DeepLCDataset(Dataset):
                 f"match length of peptidoforms ({len(self.peptidoforms)})"
             )
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return number of peptidoforms in the dataset."""
         return len(self.peptidoforms)
 
-    def __getitem__(self, idx) -> tuple:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
+        """Return encoded features and target RT for peptidoform at index."""
         if not isinstance(idx, int):
             raise TypeError(f"Index must be an integer, got {type(idx)} instead.")
         features = encode_peptidoform(

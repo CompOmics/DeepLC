@@ -33,7 +33,6 @@ EXAMPLE_PREVIEW_COLUMNS = ["peptidoform", "retention_time", "score", "qvalue", "
 
 def create_app():
     """Create and configure the NiceGUI app."""
-
     _logo_ref = importlib.resources.files("deeplc.package_data.gui_images").joinpath(
         "deeplc_logo.svg"
     )

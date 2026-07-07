@@ -29,8 +29,8 @@ def select_reference_psms(psm_list: PSMList) -> PSMList:
     Parameters
     ----------
     psm_list
-        PSMList to select reference PSMs from. Must contain PSMs with observed
-        retention times and either q-values, scores + target-decoy labels, or scores.
+        PSMList to select reference PSMs from. Must contain PSMs with observed retention
+        times and either q-values, scores + target-decoy labels, or scores.
 
     Returns
     -------
@@ -106,7 +106,8 @@ def _select_by_qvalue(candidates: PSMList) -> PSMList:
 
 
 def _select_by_computed_qvalue(psm_list: PSMList) -> PSMList:
-    """Compute q-values from target-decoy competition, then select by threshold.
+    """
+    Compute q-values from target-decoy competition, then select by threshold.
 
     Note: this modifies ``psm_list`` in-place by assigning computed q-values.
     """
