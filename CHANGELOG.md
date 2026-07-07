@@ -10,6 +10,7 @@ and this project adheres to
 
 ### Added
 
+- Bundled multitask pretrained model as the new default, trained across multiple LC setups. Automatic head selection in `calibrate()` based on Pearson correlation ensures the best fitting setup is used for predictions. Fine-tuning uses adapter-based transfer learning: a small MLP is attached on top of the multi-setup prediction heads.
 - NiceGUI-based web interface, launchable as a browser app (`deeplc gui`) or native desktop window (`deeplc gui --native`)
 - `[gui]` optional dependency group (nicegui, plotly, pywebview) for desktop use
 - `[web]` optional dependency group (nicegui, plotly) for server/Docker use
@@ -18,6 +19,7 @@ and this project adheres to
 - `predict_and_calibrate()` core function combining prediction and calibration in one call, with optional automatic reference PSM selection
 - `finetune_and_predict()` core function for transfer learning followed by calibrated prediction
 - Automatic calibration reference selection from input PSMs using q-value filtering or top-scoring fraction
+- `Calibration.selected_model_head` field to record which model output head a calibration was fitted to
 - Publish workflow with Windows installer build, Docker image build, and dry-run mode for CI testing without publishing
 
 ### Changed
