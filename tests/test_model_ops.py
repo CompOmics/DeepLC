@@ -4,10 +4,11 @@ import sys
 
 import pytest
 import torch
-from torch.utils.data import Dataset
 
 from deeplc import _model_ops
-from deeplc._architecture import BatchedHeads, MultitaskDeepLCModel
+from torch.utils.data import Dataset
+
+from deeplc._architecture import DeepLCModel
 from deeplc.core import DEFAULT_MODEL
 from deeplc.data import split_datasets
 
@@ -30,17 +31,10 @@ class _TinyDeepLCDataset(Dataset):
         return features, target
 
 
-class _DummyModel(torch.nn.Module):
-    def forward(self, matrix, matrix_sum, matrix_global, matrix_hc):  # noqa: ARG002
-        batch_size = matrix.shape[0]
-        return torch.zeros((batch_size, 1), dtype=torch.float32)
-
-
-def test_predict_returns_empty_tensor_for_empty_dataset():
+def test_predict_raises_for_empty_dataset():
     empty_data = _TinyDeepLCDataset(length=0)
-    preds = _model_ops.predict(model=_DummyModel(), data=empty_data, show_progress=False)
-    assert isinstance(preds, torch.Tensor)
-    assert preds.numel() == 0
+    with pytest.raises(ValueError, match="empty"):
+        _model_ops.predict(model=DeepLCModel(n_heads=1), data=empty_data, show_progress=False)
 
 
 def test_split_datasets_rejects_too_small_dataset_without_validation_data():
@@ -55,7 +49,7 @@ def test_split_datasets_rejects_too_small_dataset_without_validation_data():
 def test_train_rejects_empty_validation_loader():
     with pytest.raises(ValueError, match="Validation data loader is empty"):
         _model_ops.train(
-            model=_DummyModel(),
+            model=DeepLCModel(n_heads=1),
             train_dataset=_TinyDeepLCDataset(length=2),
             validation_dataset=_TinyDeepLCDataset(length=0),
             epochs=1,
@@ -75,7 +69,7 @@ def test_load_multitask_model_without_prior_shim():
 
     model = _model_ops.load_model(DEFAULT_MODEL, device="cpu")
 
-    assert isinstance(model, MultitaskDeepLCModel)
+    assert isinstance(model, DeepLCModel)
 
     x_atom = torch.zeros(2, 60, 6)
     x_sum = torch.zeros(2, 30, 6)

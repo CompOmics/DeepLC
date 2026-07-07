@@ -11,8 +11,6 @@ import torch
 from psm_utils import PSM, Peptidoform, PSMList
 
 from deeplc import _model_ops
-from deeplc._architecture import MultitaskAdapter
-from deeplc._multitask_utils import _best_correlating_head, _is_multitask_output
 from deeplc._reference_selection import select_reference_psms
 from deeplc.calibration import (
     Calibration,
@@ -30,6 +28,7 @@ def predict(
     psm_list: PSMList | list[PSM | Peptidoform | str],
     model: torch.nn.Module | PathLike | str | None = None,
     predict_kwargs: dict | None = None,
+    return_matrix: bool = False,
 ) -> np.ndarray:
     """
     Predict retention times for a list of PSMs using a trained model.
@@ -42,18 +41,26 @@ def predict(
         Trained model or path to model file. If None, the default DeepLC model is used.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
+    return_matrix
+        If True, return the full prediction matrix of shape ``(n, n_heads)`` when using a
+        multitask model. If False (default), return a 1D array of shape ``(n,)`` using
+        head 0 when model output is 2D.
 
     Returns
     -------
     np.ndarray
-        Retention time predictions.
+        Retention time predictions. Shape ``(n,)`` unless ``return_matrix=True`` and model
+        produces multitask output, in which case shape is ``(n, n_heads)``.
 
     """
-    return _model_ops.predict(
+    result = _model_ops.predict(
         model=model or DEFAULT_MODEL,
         data=DeepLCDataset.from_psm_list(_parse_psms(psm_list)),
         **(predict_kwargs or {}),
     ).numpy()
+    if not return_matrix:
+        return result[:, 0]
+    return result
 
 
 def calibrate(
@@ -107,16 +114,19 @@ def calibrate(
         psm_list=psm_list_reference,
         model=model,
         predict_kwargs=predict_kwargs,
+        return_matrix=True,
     )
 
     # Fit calibration
     LOGGER.debug("Fitting calibration...")
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
 
-    if _is_multitask_output(source_rt_cal):
+    if source_rt_cal.shape[1] > 1:
         selected_head_idx = _best_correlating_head(source_rt_cal, target_rt_cal)
-        source_rt_cal = source_rt_cal[:, selected_head_idx]
         calibration.selected_head_idx = int(selected_head_idx)
+    else:
+        selected_head_idx = 0
+    source_rt_cal = source_rt_cal[:, selected_head_idx]
 
     calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
@@ -168,6 +178,7 @@ def predict_and_calibrate(
         psm_list=parsed_psm_list,
         model=model,
         predict_kwargs=predict_kwargs,
+        return_matrix=True,
     )
 
     if calibration is not None and not isinstance(calibration, Calibration):
@@ -186,20 +197,20 @@ def predict_and_calibrate(
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
 
-    if _is_multitask_output(predicted_rt):
+    if predicted_rt.shape[1] > 1:
         selected_head_idx = getattr(calibration, "selected_head_idx", None)
         if selected_head_idx is None:
             ref_pred_rt = predict(
                 psm_list=parsed_psm_list_ref,
                 model=model,
                 predict_kwargs=predict_kwargs,
+                return_matrix=True,
             )
-            if _is_multitask_output(ref_pred_rt):
-                ref_targets = np.array(parsed_psm_list_ref["retention_time"], dtype=np.float32)
-                selected_head_idx = _best_correlating_head(ref_pred_rt, ref_targets)
-            else:
-                selected_head_idx = 0
-        predicted_rt = predicted_rt[:, int(selected_head_idx)]
+            ref_targets = np.array(parsed_psm_list_ref["retention_time"], dtype=np.float32)
+            selected_head_idx = _best_correlating_head(ref_pred_rt, ref_targets)
+    else:
+        selected_head_idx = 0
+    predicted_rt = predicted_rt[:, int(selected_head_idx)]
 
     # Apply calibration to predictions
     calibrated_rt = calibration.transform(predicted_rt)
@@ -292,6 +303,9 @@ def finetune(
     psm_list_validation
         List of PSMs to use for validation during fine-tuning. If None, a split from psm_list is
         used.
+    validation_split
+        Fraction of ``psm_list_reference`` to use for validation when ``psm_list_validation``
+        is None.
     model
         Trained model or path to model file.
     train_kwargs
@@ -315,35 +329,18 @@ def finetune(
         training_data, validation_data=validation_data, validation_split=validation_split
     )
     train_kwargs_local = dict(train_kwargs or {})
-    model_for_training: torch.nn.Module | PathLike | str | None = model or DEFAULT_MODEL
+    adapter_hidden_size = int(train_kwargs_local.pop("adapter_hidden_size", 256))
+    freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
 
     loaded_model = _model_ops.load_model(
-        model_for_training,
+        model or DEFAULT_MODEL,
         device=train_kwargs_local.get("device"),
     )
-
-    sample_features, _ = training_dataset[0]
-    sample_features = [
-        feature.unsqueeze(0).to(next(loaded_model.parameters()).device)
-        for feature in sample_features
-    ]
-    with torch.no_grad():
-        sample_output = loaded_model(*sample_features)
-
-    if sample_output.ndim == 2 and sample_output.shape[1] > 1:
-        adapter_hidden_size = int(train_kwargs_local.pop("adapter_hidden_size", 256))
-        freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
-        model_for_training = MultitaskAdapter(
-            multitask_model=loaded_model,
-            n_heads=sample_output.shape[1],
-            hidden_size=adapter_hidden_size,
-        )
-        train_kwargs_local["freeze_epochs"] = freeze_epochs
-    else:
-        model_for_training = loaded_model
+    loaded_model.add_adapter(hidden_size=adapter_hidden_size)
+    train_kwargs_local["freeze_epochs"] = freeze_epochs
 
     finetuned_model = _model_ops.train(
-        model=model_for_training,
+        model=loaded_model,
         train_dataset=training_dataset,
         validation_dataset=validation_dataset,
         **train_kwargs_local,
@@ -394,6 +391,23 @@ def train(
     return trained_model
 
 
+def save_model(model: torch.nn.Module, path: PathLike | str) -> None:
+    """
+    Save a model's state dict to a file.
+
+    Use :func:`load_model` (via :func:`predict`) to reload the saved checkpoint.
+
+    Parameters
+    ----------
+    model
+        Trained model instance to save.
+    path
+        Destination file path.
+
+    """
+    torch.save(model.state_dict(), path)
+
+
 def _parse_psms(psm_list: PSMList | list[PSM | Peptidoform | str]) -> PSMList:
     """
     Parse a list of PSMs, Peptidoforms, or strings into a PSMList.
@@ -418,3 +432,25 @@ def _parse_psms(psm_list: PSMList | list[PSM | Peptidoform | str]) -> PSMList:
             raise ValueError("List must contain either PSMs, Peptidoforms, or strings.")
     else:
         raise ValueError("Input must be a PSMList or a list of PSMs, Peptidoforms, or strings.")
+
+
+def _best_correlating_head(predictions: np.ndarray, targets: np.ndarray) -> int:
+    """Return the head index with highest valid Pearson correlation to targets."""
+    best_idx = 0
+    best_corr = float("-inf")
+
+    for idx in range(predictions.shape[1]):
+        pred_col = predictions[:, idx]
+        mask = np.isfinite(pred_col) & np.isfinite(targets)
+        if mask.sum() < 3:
+            continue
+        pred_masked = pred_col[mask]
+        target_masked = targets[mask]
+        if np.std(pred_masked) < 1e-8 or np.std(target_masked) < 1e-8:
+            continue
+        corr = np.corrcoef(pred_masked, target_masked)[0, 1]
+        if np.isfinite(corr) and corr > best_corr:
+            best_corr = corr
+            best_idx = idx
+
+    return best_idx

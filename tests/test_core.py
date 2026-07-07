@@ -61,10 +61,14 @@ def test_predict_and_calibrate_returns_calibrated_values_differ_from_raw():
     calibrated = deeplc.core.predict_and_calibrate(
         _make_psm_list(_PEPTIDES), psm_list_reference=reference
     )
-    # Multitask model returns [n, n_heads]; select first head for comparison
-    if raw.ndim == 2:
-        raw = raw[:, 0]
     assert not np.allclose(raw, calibrated)
+
+
+def test_predict_returns_matrix_when_flag_set():
+    result = deeplc.core.predict(_make_psm_list(_PEPTIDES), return_matrix=True)
+    assert result.ndim == 2
+    assert result.shape[0] == len(_PEPTIDES)
+    assert result.shape[1] > 1
 
 
 def test_predict_and_calibrate_auto_selects_reference():

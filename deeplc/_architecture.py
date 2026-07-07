@@ -5,7 +5,7 @@ This module contains the neural network architectures used by DeepLC for
 predicting peptide retention times based on atomic composition and other features.
 """
 
-import copy
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -24,6 +24,7 @@ class LeakyReLUSaturation(nn.Module):
         Negative slope coefficient for leaky ReLU (default: 0.1)
     max_value
         Maximum output value for saturation (default: 20.0)
+
     """
 
     def __init__(self, negative_slope: float = 0.1, max_value: float = 20.0):
@@ -55,6 +56,7 @@ class ConvBlock(nn.Module):
         Size of the max pooling window (default: 2)
     regularizer_val
         L1 regularization coefficient (default: 0.000005)
+
     """
 
     def __init__(
@@ -88,6 +90,7 @@ class ConvBlock(nn.Module):
         )
         self.activation2 = LeakyReLUSaturation()
 
+        self.pool: nn.MaxPool1d | None = None
         if use_pooling:
             self.pool = nn.MaxPool1d(kernel_size=pool_size, stride=pool_size)
 
@@ -99,7 +102,7 @@ class ConvBlock(nn.Module):
         x = self.activation1(x)
         x = self.conv2(x)
         x = self.activation2(x)
-        if self.use_pooling:
+        if self.pool is not None:
             x = self.pool(x)
         return x
 
@@ -118,6 +121,7 @@ class GlobalFeatureBranch(nn.Module):
         Layer size for each hidden layer
     regularizer_val
         L1 regularization coefficient (default: 0.000005)
+
     """
 
     def __init__(
@@ -160,6 +164,7 @@ class OneHotBranch(nn.Module):
         Length of the input sequence
     kernel_size
         Size of the convolutional kernel (default: 2)
+
     """
 
     def __init__(
@@ -203,21 +208,57 @@ class OneHotBranch(nn.Module):
         return x
 
 
-class DeepLCModel(nn.Module):
+class BatchedHeads(nn.Module):
     """
-    Complete DeepLC model for peptide retention time prediction.
+    Parallel output heads sharing a hidden projection.
 
-    This model consists of multiple branches processing different feature types:
-    - Atomic composition CNN (per-position atomic features)
-    - Summed atomic composition CNN (aggregated atomic features)
-    - Global feature branch (peptide-level features)
-    - One-hot encoding branch (amino acid sequence)
-
-    The outputs are concatenated and passed through a deep fully connected network
-    for final prediction.
+    Each head maps the shared trunk output to a scalar via a two-step
+    computation: a batched linear projection followed by a per-head dot
+    product with a learned weight vector.
 
     Parameters
     ----------
+    input_size
+        Size of the input feature vector (output of shared trunk).
+    n_heads
+        Number of parallel output heads.
+    hidden
+        Hidden dimension per head (default: 32).
+
+    """
+
+    def __init__(self, input_size: int, n_heads: int, hidden: int = 32):
+        super().__init__()
+        self.layer1 = nn.Linear(input_size, n_heads * hidden)
+        self.w2 = nn.Parameter(torch.zeros(n_heads, hidden))
+        self.b2 = nn.Parameter(torch.zeros(n_heads))
+        nn.init.normal_(self.w2, std=0.05)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.layer1(x)
+        n_heads = self.b2.shape[0]
+        h = torch.relu(h.view(h.shape[0], n_heads, h.shape[1] // n_heads))
+        return (h * self.w2.unsqueeze(0)).sum(dim=-1) + self.b2  # (batch, n_heads)
+
+
+class DeepLCModel(nn.Module):
+    """
+    DeepLC model for peptide retention time prediction.
+
+    Four parallel input branches — per-position atomic composition CNN, summed atomic
+    composition CNN, global feature dense network, and one-hot amino acid CNN — are
+    concatenated and passed through a shared dense trunk. Outputs are projected by
+    :class:`BatchedHeads` to ``[batch, n_heads]``.
+
+    When ``n_heads > 1`` the model is a multitask backbone trained across multiple LC
+    setups. Call :meth:`add_adapter` to attach a fine-tuning MLP that maps the head
+    vector to a single RT value ``[batch, 1]``.
+
+
+    Parameters
+    ----------
+    n_heads
+        Number of parallel output heads (default: 1).
     atom_sequence_length
         Length of the atomic composition sequence (default: 60)
     atom_channels
@@ -256,10 +297,12 @@ class DeepLCModel(nn.Module):
         Number of final dense layers (default: 5)
     regularizer_val
         L1 regularization coefficient (default: 0.000005)
+
     """
 
     def __init__(
         self,
+        n_heads: int = 1,
         atom_sequence_length: int = 60,
         atom_channels: int = 6,
         atom_sum_sequence_length: int = 30,
@@ -277,13 +320,13 @@ class DeepLCModel(nn.Module):
         global_layer_size: int = 64,
         global_num_layers: int = 4,
         final_layer_size: int = 128,
-        final_num_layers: int = 5,
+        final_num_layers: int = 4,
         regularizer_val: float = 0.000005,
     ):
         super().__init__()
 
         # Branch A: Atomic composition CNN
-        a_layers = []
+        a_layers: list[nn.Module] = []
         in_channels = atom_channels
         for block_idx in range(atom_cnn_blocks):
             out_channels = int(atom_cnn_filters_start / (2**block_idx))
@@ -299,11 +342,10 @@ class DeepLCModel(nn.Module):
                 )
             )
             in_channels = out_channels
-
         self.branch_a = nn.Sequential(*a_layers, nn.Flatten())
 
         # Branch B: Summed atomic composition CNN
-        b_layers = []
+        b_layers: list[nn.Module] = []
         in_channels = atom_channels
         for block_idx in range(sum_cnn_blocks):
             out_channels = int(sum_cnn_filters_start / (2**block_idx))
@@ -319,7 +361,6 @@ class DeepLCModel(nn.Module):
                 )
             )
             in_channels = out_channels
-
         self.branch_b = nn.Sequential(*b_layers, nn.Flatten())
 
         # Branch C: Global features
@@ -332,48 +373,61 @@ class DeepLCModel(nn.Module):
 
         # Branch D: One-hot encoding
         self.branch_d = OneHotBranch(
-            one_hot_channels,
-            one_hot_sequence_length,
-            kernel_size=one_hot_kernel_size,
+            one_hot_channels, one_hot_sequence_length, kernel_size=one_hot_kernel_size
         )
 
-        # Calculate concatenated feature size
-        # Need to compute output sizes after convolutions and pooling
+        # Compute concatenated feature size via a dummy forward pass
         with torch.no_grad():
-            dummy_a = torch.zeros(1, atom_channels, atom_sequence_length)
-            dummy_b = torch.zeros(1, atom_channels, atom_sum_sequence_length)
-            dummy_c = torch.zeros(1, global_feature_size)
-
-            out_a = self.branch_a(dummy_a)
-            out_b = self.branch_b(dummy_b)
-            out_c = self.branch_c(dummy_c)
-
-            dummy_d = torch.zeros(1, one_hot_channels, one_hot_sequence_length)
-            out_d = self.branch_d(dummy_d)
-
-            concat_size = out_a.shape[1] + out_b.shape[1] + out_c.shape[1] + out_d.shape[1]
-
-        # Final dense layers
-        final_layers = []
-        for i in range(final_num_layers):
-            in_features = concat_size if i == 0 else final_layer_size
-            final_layers.extend(
-                [
-                    nn.Linear(in_features, final_layer_size),
-                    LeakyReLUSaturation(),
-                ]
+            concat_size = (
+                self.branch_a(torch.zeros(1, atom_channels, atom_sequence_length)).shape[1]
+                + self.branch_b(torch.zeros(1, atom_channels, atom_sum_sequence_length)).shape[1]
+                + self.branch_c(torch.zeros(1, global_feature_size)).shape[1]
+                + self.branch_d(torch.zeros(1, one_hot_channels, one_hot_sequence_length)).shape[1]
             )
 
-        # Output layer
-        final_layers.append(nn.Linear(final_layer_size, 1))
+        # Shared trunk: dense layers without output linear
+        trunk_layers: list[nn.Module] = []
+        for i in range(final_num_layers):
+            in_features = concat_size if i == 0 else final_layer_size
+            trunk_layers.extend([nn.Linear(in_features, final_layer_size), LeakyReLUSaturation()])
+        self.shared_trunk = nn.Sequential(*trunk_layers)
 
-        self.final_network = nn.Sequential(*final_layers)
+        # Output heads
+        self.heads = BatchedHeads(final_layer_size, n_heads)
 
-        # Initialize weights
+        # Optional fine-tuning adapter (None until add_adapter() is called)
+        self.adapter: nn.Module | None = None
+
         self._initialize_weights()
 
-    def _initialize_weights(self):
-        """Initialize weights using normal distribution (matching TensorFlow's RandomNormal)."""
+    def add_adapter(self, hidden_size: int = 256) -> None:
+        """
+        Attach a fine-tuning adapter mapping the head vector to one RT output.
+
+        Adapter parameters are left at PyTorch default initialization and trained from scratch
+        during fine-tuning.
+        """
+        n_heads = self.heads.b2.shape[0]
+        self.adapter = nn.Sequential(
+            nn.Linear(n_heads, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, max(1, hidden_size // 2)),
+            nn.ReLU(),
+            nn.Linear(max(1, hidden_size // 2), 1),
+        )
+        self.adapter.to(self.heads.b2.device)
+
+    def freeze_backbone(self) -> None:
+        """Freeze all parameters except the adapter."""
+        for name, param in self.named_parameters():
+            param.requires_grad = name.startswith("adapter.")
+
+    def unfreeze_backbone(self) -> None:
+        """Unfreeze all parameters."""
+        for param in self.parameters():
+            param.requires_grad = True
+
+    def _initialize_weights(self) -> None:
         for module in self.modules():
             if isinstance(module, (nn.Conv1d, nn.Linear)):
                 nn.init.normal_(module.weight, mean=0.0, std=0.05)
@@ -388,141 +442,28 @@ class DeepLCModel(nn.Module):
         x_one_hot: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Forward pass through the DeepLC model.
-
-        Parameters
-        ----------
-        x_atom
-            Atomic composition features [batch, sequence_length, channels]
-        x_atom_sum
-            Summed atomic composition features [batch, sequence_length, channels]
-        x_global
-            Global peptide features [batch, feature_size]
-        x_one_hot
-            One-hot encoded amino acid features [batch, sequence_length, channels]
+        Forward pass.
 
         Returns
         -------
         torch.Tensor
-            Predicted retention times [batch, 1]
+            Shape ``[batch, n_heads]``, or ``[batch, 1]`` when an adapter is attached.
 
         """
-        # Transpose to Conv1D format: (batch, channels, length)
-        x_atom = x_atom.transpose(1, 2)
-        x_atom_sum = x_atom_sum.transpose(1, 2)
-        x_one_hot = x_one_hot.transpose(1, 2)
-
-        # Process each branch
-        out_a = self.branch_a(x_atom)
-        out_b = self.branch_b(x_atom_sum)
-        out_c = self.branch_c(x_global)
-        out_d = self.branch_d(x_one_hot)
-
-        # Concatenate features
-        concatenated = torch.cat([out_a, out_b, out_c, out_d], dim=1)
-
-        # Final prediction
-        output = self.final_network(concatenated)
-
-        return output
-
-
-class BatchedHeads(nn.Module):
-    """Parallel output heads sharing a hidden projection.
-
-    Each head maps the shared trunk output to a scalar via a two-step
-    computation: a batched linear projection followed by a per-head dot
-    product with a learned weight vector.
-
-    Parameters
-    ----------
-    input_size
-        Size of the input feature vector (output of shared trunk).
-    n_heads
-        Number of parallel output heads.
-    hidden
-        Hidden dimension per head (default: 32).
-    """
-
-    def __init__(self, input_size: int, n_heads: int, hidden: int = 32):
-        super().__init__()
-        self.layer1 = nn.Linear(input_size, n_heads * hidden)
-        self.w2 = nn.Parameter(torch.zeros(n_heads, hidden))
-        self.b2 = nn.Parameter(torch.zeros(n_heads))
-        nn.init.normal_(self.w2, std=0.05)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.layer1(x)  # (batch, n_heads * hidden)
-        n_heads = self.b2.shape[0]
-        h = torch.relu(h.view(h.shape[0], n_heads, h.shape[1] // n_heads))
-        return (h * self.w2.unsqueeze(0)).sum(dim=-1) + self.b2  # (batch, n_heads)
-
-
-class MultitaskDeepLCModel(nn.Module):
-    """Multi-task DeepLC backbone predicting RT across multiple LC systems.
-
-    Shares the same four input branches as :class:`DeepLCModel` but replaces
-    the single-output final network with a shared trunk feeding into
-    :class:`BatchedHeads`, producing one RT value per LC system.
-
-    This class is primarily used for loading pre-trained checkpoints via
-    ``torch.load``.  The child modules (``branch_a``, ``branch_b``,
-    ``branch_c``, ``branch_d``, ``shared_trunk``, ``heads``) are restored
-    from the checkpoint state dict and do not need to be constructed here.
-    """
-
-    def forward(
-        self,
-        x_atom: torch.Tensor,
-        x_atom_sum: torch.Tensor,
-        x_global: torch.Tensor,
-        x_one_hot: torch.Tensor,
-    ) -> torch.Tensor:
         x_atom = x_atom.transpose(1, 2)
         x_atom_sum = x_atom_sum.transpose(1, 2)
         x_one_hot = x_one_hot.transpose(1, 2)
         concatenated = torch.cat(
             [
-                self.branch_a(x_atom),  # type: ignore[attr-defined]
-                self.branch_b(x_atom_sum),  # type: ignore[attr-defined]
-                self.branch_c(x_global),  # type: ignore[attr-defined]
-                self.branch_d(x_one_hot),  # type: ignore[attr-defined]
+                self.branch_a(x_atom),
+                self.branch_b(x_atom_sum),
+                self.branch_c(x_global),
+                self.branch_d(x_one_hot),
             ],
             dim=1,
         )
-        return self.heads(self.shared_trunk(concatenated))  # type: ignore[attr-defined]
-
-
-class MultitaskAdapter(nn.Module):
-    """Wrap a multitask backbone and map its head vector to one RT output."""
-
-    def __init__(self, multitask_model: nn.Module, n_heads: int, hidden_size: int = 256):
-        super().__init__()
-        self.backbone = copy.deepcopy(multitask_model)
-        self.adapter = nn.Sequential(
-            nn.Linear(n_heads, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, max(1, hidden_size // 2)),
-            nn.ReLU(),
-            nn.Linear(max(1, hidden_size // 2), 1),
-        )
-
-    def forward(
-        self,
-        x_atom: torch.Tensor,
-        x_atom_sum: torch.Tensor,
-        x_global: torch.Tensor,
-        x_one_hot: torch.Tensor,
-    ) -> torch.Tensor:
-        multitask_output = self.backbone(x_atom, x_atom_sum, x_global, x_one_hot)
-        if multitask_output.ndim == 1:
-            multitask_output = multitask_output.unsqueeze(0)
-        return self.adapter(multitask_output)
-
-    def freeze_backbone(self) -> None:
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-
-    def unfreeze_backbone(self) -> None:
-        for param in self.backbone.parameters():
-            param.requires_grad = True
+        out = self.heads(self.shared_trunk(concatenated))  # [batch, n_heads]
+        adapter = getattr(self, "adapter", None)
+        if adapter is not None:
+            return adapter(out)  # [batch, 1]
+        return out
