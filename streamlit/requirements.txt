@@ -1,5 +1,0 @@
-plotly
-pandas
-statsmodels
-streamlit>=0.88
-deeplc
