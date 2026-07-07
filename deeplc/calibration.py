@@ -19,8 +19,11 @@ LOGGER = logging.getLogger(__name__)
 class Calibration(ABC):
     """Abstract base class for calibration."""
 
+    selected_model_head: int | None = None
+
     @abstractmethod
     def __init__(self, *args, **kwargs):
+        """Initialize the calibration model."""
         super().__init__()
 
     @property
@@ -45,16 +48,21 @@ class IdentityCalibration(Calibration):
 
     @property
     def is_fitted(self) -> bool:
+        """Always fitted; identity calibration requires no fitting."""
         return True
 
     def fit(self, target: np.ndarray, source: np.ndarray) -> None:  # noqa: ARG002
+        """No-op; identity calibration does not fit."""
         return None
 
     def transform(self, source: np.ndarray) -> np.ndarray:
+        """Return source unchanged."""
         return source
 
 
 class PiecewiseLinearCalibration(Calibration):
+    """Piece-wise linear calibration based on per-split anchors."""
+
     def __init__(
         self,
         number_of_splits: int = 10,
@@ -79,6 +87,7 @@ class PiecewiseLinearCalibration(Calibration):
             Minimum number of samples required for a segment to contribute an anchor.
             Segments with fewer samples are skipped, which helps avoid unstable anchors in
             sparse regions when using many splits.
+
         """
         super().__init__()
         self.number_of_splits = int(number_of_splits)
@@ -97,6 +106,7 @@ class PiecewiseLinearCalibration(Calibration):
 
     @property
     def is_fitted(self) -> bool:
+        """True if the calibration model has been fitted."""
         return (
             self._calibrate_min is not None
             and self._calibrate_max is not None
@@ -107,10 +117,12 @@ class PiecewiseLinearCalibration(Calibration):
 
     @property
     def calibrate_min(self) -> float | None:
+        """Minimum source value seen during fitting."""
         return self._calibrate_min
 
     @property
     def calibrate_max(self) -> float | None:
+        """Maximum source value seen during fitting."""
         return self._calibrate_max
 
     def fit(self, target: np.ndarray, source: np.ndarray) -> None:
@@ -228,7 +240,10 @@ class PiecewiseLinearCalibration(Calibration):
 
 
 class SplineTransformerCalibration(Calibration):
+    """Spline-based calibration using sklearn's SplineTransformer."""
+
     def __init__(self) -> None:
+        """Initialize SplineTransformerCalibration."""
         super().__init__()
         self._calibrate_min: float | None = None
         self._calibrate_max: float | None = None
@@ -238,6 +253,7 @@ class SplineTransformerCalibration(Calibration):
 
     @property
     def is_fitted(self) -> bool:
+        """True if the calibration model has been fitted."""
         return (
             self._calibrate_min is not None
             and self._calibrate_max is not None
@@ -287,6 +303,8 @@ class SplineTransformerCalibration(Calibration):
         model_main = cast(Pipeline | LinearRegression, self._model_main)
         model_left = cast(LinearRegression, self._model_left)
         model_right = cast(LinearRegression, self._model_right)
+        calibrate_min = cast(float, self._calibrate_min)
+        calibrate_max = cast(float, self._calibrate_max)
 
         if source.shape[0] == 0:
             return np.array([])
@@ -294,15 +312,15 @@ class SplineTransformerCalibration(Calibration):
         y_pred_spline = model_main.predict(source.reshape(-1, 1))
         y_pred_left = model_left.predict(source.reshape(-1, 1))
         y_pred_right = model_right.predict(source.reshape(-1, 1))
-        within_range = (source >= self._calibrate_min) & (source <= self._calibrate_max)
+        within_range = (source >= calibrate_min) & (source <= calibrate_max)
         within_range = within_range.ravel()
 
         cal_preds = np.copy(y_pred_spline)
-        cal_preds[~within_range & (source.ravel() < self._calibrate_min)] = y_pred_left[
-            ~within_range & (source.ravel() < self._calibrate_min)
+        cal_preds[~within_range & (source.ravel() < calibrate_min)] = y_pred_left[
+            ~within_range & (source.ravel() < calibrate_min)
         ]
-        cal_preds[~within_range & (source.ravel() > self._calibrate_max)] = y_pred_right[
-            ~within_range & (source.ravel() > self._calibrate_max)
+        cal_preds[~within_range & (source.ravel() > calibrate_max)] = y_pred_right[
+            ~within_range & (source.ravel() > calibrate_max)
         ]
         return np.array(cal_preds)
 

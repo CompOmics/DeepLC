@@ -121,12 +121,10 @@ def calibrate(
     LOGGER.debug("Fitting calibration...")
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
 
+    # Select the best head for calibration if the model predicts for multiple LC setups
     if source_rt_cal.shape[1] > 1:
-        selected_head_idx = _best_correlating_head(source_rt_cal, target_rt_cal)
-        calibration.selected_head_idx = int(selected_head_idx)
-    else:
-        selected_head_idx = 0
-    source_rt_cal = source_rt_cal[:, selected_head_idx]
+        calibration.selected_model_head = _best_correlating_head(source_rt_cal, target_rt_cal)
+    source_rt_cal = source_rt_cal[:, calibration.selected_model_head or 0]
 
     calibration.fit(target=target_rt_cal, source=source_rt_cal)
 
@@ -198,19 +196,15 @@ def predict_and_calibrate(
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
 
     if predicted_rt.shape[1] > 1:
-        selected_head_idx = getattr(calibration, "selected_head_idx", None)
-        if selected_head_idx is None:
-            ref_pred_rt = predict(
-                psm_list=parsed_psm_list_ref,
-                model=model,
-                predict_kwargs=predict_kwargs,
-                return_matrix=True,
+        if calibration.selected_model_head is None:
+            raise ValueError(
+                "Calibration has no selected_model_head. Either use calibrate() to fit it, "
+                "or set calibration.selected_model_head manually before calling "
+                "predict_and_calibrate() with a multitask model."
             )
-            ref_targets = np.array(parsed_psm_list_ref["retention_time"], dtype=np.float32)
-            selected_head_idx = _best_correlating_head(ref_pred_rt, ref_targets)
+        predicted_rt = predicted_rt[:, calibration.selected_model_head]
     else:
-        selected_head_idx = 0
-    predicted_rt = predicted_rt[:, int(selected_head_idx)]
+        predicted_rt = predicted_rt[:, 0]
 
     # Apply calibration to predictions
     calibrated_rt = calibration.transform(predicted_rt)
