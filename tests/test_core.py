@@ -64,6 +64,13 @@ def test_predict_and_calibrate_returns_calibrated_values_differ_from_raw():
     assert not np.allclose(raw, calibrated)
 
 
+def test_predict_returns_matrix_when_flag_set():
+    result = deeplc.core.predict(_make_psm_list(_PEPTIDES), return_matrix=True)
+    assert result.ndim == 2
+    assert result.shape[0] == len(_PEPTIDES)
+    assert result.shape[1] > 1
+
+
 def test_predict_and_calibrate_auto_selects_reference():
     # 200 PSMs cycling through _PEPTIDES; 100 with qvalue<=0.01, 100 with qvalue=1.0.
     # auto-selection picks the 100 low-qvalue PSMs as reference.

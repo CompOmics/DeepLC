@@ -26,32 +26,42 @@ logger = logging.getLogger(__name__)
 def load_model(
     model: torch.nn.Module | PathLike | str | None = None,
     device: str | None = None,
-) -> torch.nn.Module:
+) -> DeepLCModel:
     """Load a model from a file or return a randomly initialized model if none is provided."""
     # If device is not specified, use the default device (GPU if available, else CPU)
-    selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    selected_device: torch.device | str = device or torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
-    # Load model from file if a path is provided
     if isinstance(model, (str, PathLike, Path)):
-        loaded_model = torch.load(model, weights_only=False, map_location=selected_device)
-    elif isinstance(model, torch.nn.Module):
+        # Infer architecture hyperparameters from the saved state dict
+        # Only checks n_heads and final_num_layers; other hyperparameters are set to defaults
+        # May break for models saved with different architectures.
+        raw = torch.load(model, weights_only=True, map_location=selected_device)
+        n_heads = raw["heads.b2"].shape[0]
+        final_num_layers = sum(
+            1 for k in raw if k.startswith("shared_trunk.") and k.endswith(".weight")
+        )
+        loaded_model = DeepLCModel(n_heads=n_heads, final_num_layers=final_num_layers)
+        if "adapter.0.weight" in raw:
+            loaded_model.add_adapter(hidden_size=raw["adapter.0.weight"].shape[0])
+        loaded_model.load_state_dict(raw)
+    elif isinstance(model, DeepLCModel):
         loaded_model = model
         logger.debug("Using provided PyTorch model instance")
     elif model is None:
-        # Initialize a new model with default architecture
-        loaded_model = DeepLCModel()
+        loaded_model = DeepLCModel(n_heads=1)
         logger.debug("Initialized new DeepLCModel with default architecture")
     else:
-        raise TypeError(f"Expected a PyTorch Module or a file path, got {type(model)} instead.")
+        raise TypeError(f"Expected a DeepLCModel or a file path, got {type(model)} instead.")
 
-    # Ensure the model is on the specified device
     loaded_model.to(selected_device)
 
     return loaded_model
 
 
 def train(
-    model: torch.nn.Module | PathLike | str | None,
+    model: DeepLCModel | PathLike | str | None,
     train_dataset: DeepLCDataset | Subset[DeepLCDataset],
     validation_dataset: DeepLCDataset | Subset[DeepLCDataset],
     device: str | None = None,
@@ -61,6 +71,8 @@ def train(
     epochs: int = 25,
     batch_size: int = 512,
     patience: int = 10,
+    freeze_epochs: int = 0,
+    unfreeze_lr_scale: float = 0.1,
     show_progress: bool = True,
 ) -> torch.nn.Module:
     """
@@ -88,6 +100,10 @@ def train(
         Batch size for training and validation.
     patience
         Number of epochs with no improvement before early stopping.
+    freeze_epochs
+        Number of initial epochs to train with backbone frozen (adapter only).
+    unfreeze_lr_scale
+        Learning rate multiplier applied after unfreezing the backbone.
     show_progress
         If True, display a Rich progress bar during training. If False, run silently.
 
@@ -119,6 +135,9 @@ def train(
             "Validation data loader is empty. Adjust validation data or validation_split."
         )
 
+    has_freeze = hasattr(model, "freeze_backbone") and hasattr(model, "unfreeze_backbone")
+    if has_freeze and freeze_epochs > 0:
+        model.freeze_backbone()
     optimizer = _get_optimizer(model, learning_rate)
     loss_fn = torch.nn.L1Loss()
 
@@ -129,7 +148,11 @@ def train(
     with _create_progress(disable=not show_progress) as progress:
         epoch_task = progress.add_task("Epochs", total=epochs, status="")
 
-        for _epoch in range(epochs):
+        for epoch in range(epochs):
+            if has_freeze and freeze_epochs > 0 and epoch == freeze_epochs:
+                model.unfreeze_backbone()
+                optimizer = _get_optimizer(model, learning_rate * unfreeze_lr_scale)
+
             avg_loss = _train_epoch(model, train_loader, optimizer, loss_fn, device)
             avg_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
 
@@ -254,8 +277,8 @@ def _predict_epoch(
             outputs = model(*features)
             predictions.append(outputs.cpu())
     if not predictions:
-        return torch.empty(0, dtype=torch.float32)
-    return torch.cat(predictions, dim=0).squeeze()
+        raise ValueError("Dataset is empty — nothing to predict.")
+    return torch.cat(predictions, dim=0)
 
 
 def _create_progress(disable: bool = False) -> Progress:

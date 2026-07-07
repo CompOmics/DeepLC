@@ -179,6 +179,7 @@ def gui(native):
 
 
 def main():
+    """Entry point for the DeepLC CLI."""
     cli()
 
 
