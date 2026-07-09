@@ -8,6 +8,7 @@ from deeplc.core import (
     finetune_and_predict,
     predict,
     predict_and_calibrate,
+    save_model,
     train,
 )
 
@@ -18,5 +19,6 @@ __all__: list[str] = [
     "predict_and_calibrate",
     "finetune_and_predict",
     "finetune",
+    "save_model",
     "train",
 ]
