@@ -10,30 +10,40 @@
 
 
 .. toctree::
-   :caption: About
+   :caption: Getting started
    :hidden:
    :includehidden:
    :maxdepth: 2
 
    Readme <self>
-   FAQ <faq>
-   Contributing <contributing>
-   Changelog <changelog>
+   Usage <usage>
+   Prediction models <models>
+   Migrating from v3 <migration>
 
 
 .. toctree::
-   :caption: Python API reference
+   :caption: Python API
    :hidden:
    :includehidden:
    :glob:
+   :maxdepth: 2
 
    api/*
-
 
 .. toctree::
    :caption: Command line interface
    :hidden:
    :includehidden:
+   :glob:
    :maxdepth: 2
 
-   cli/cli
+   CLI reference <cli/cli>
+
+.. toctree::
+   :caption: About
+   :hidden:
+   :includehidden:
+   :maxdepth: 2
+
+   Changelog <changelog>
+   Contributing <contributing>
