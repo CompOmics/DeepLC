@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0b1] - 2026-07-10
+
+### Added
+
+- Bundled multitask pretrained model as the new default, trained across multiple LC setups. Automatic head selection in `calibrate()` based on Pearson correlation ensures the best fitting setup is used for predictions. Fine-tuning uses adapter-based transfer learning: a small MLP is attached on top of the multi-setup prediction heads.
+- NiceGUI-based web interface, launchable as a browser app (`deeplc gui`) or native desktop window (`deeplc gui --native`)
+- `[gui]` optional dependency group (nicegui, plotly, pywebview) for desktop use
+- `[web]` optional dependency group (nicegui, plotly) for server/Docker use
+- Docker image for containerized web server deployment
+- Updated Windows installer (PyInstaller and Inno Setup) to new GUI
+- `predict_and_calibrate()` core function combining prediction and calibration in one call, with optional automatic reference PSM selection
+- `finetune_and_predict()` core function for transfer learning followed by calibrated prediction
+- Automatic calibration reference selection from input PSMs using q-value filtering or top-scoring fraction
+- `Calibration.selected_model_head` field to record which model output head a calibration was fitted to
+- Publish workflow with Windows installer build, Docker image build, and dry-run mode for CI testing without publishing
+
+### Changed
+
+- CLI restructured into `predict` and `gui` subcommands
+- Example datasets updated from legacy CSV format to psm_utils TSV and peprec formats
+
+## [4.0.0-alpha.1]
+
+### Changed
+
+- Simplified the public package API by splitting up the single class-based API into core functions (`predict`, `finetune`, `train`, etc.)
+- Switched deep learning framework from Tensorflow to PyTorch
+- Speed up predictions by removing ensemble method where output from three models with differing kernel sizes was averaged to one prediction
+- Separated calibration logic to dedicated reusable module with sklearn-like API.
+- Improved computational efficiency of piece-wise linear calibration and set sensible default parameters
+- Built-in transfer learning functionality, instead of using external `deeplcretrainer` package.
+- Cleaned up package, removing legacy and unused code and files, and improving modularity
+- Modernized CI workflows to use `uv`
+- Added sphinx-based documentation for readthedocs
+
+### Removed
+
+- Removed library-feature for storing past predictions
+- Removed legacy CALLC functionality
+
 ## [3.1.13] - 2025-09-01
 
 ### Changed
@@ -71,7 +111,6 @@ and this project adheres to
 ### Changed
 
 - Bioconda fix import
-
 
 ## [3.1.2] - 2024-11-21
 

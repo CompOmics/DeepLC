@@ -1,14 +1,24 @@
-import sys
+"""DeepLC: Retention time prediction for peptides carrying any modification."""
 
+from importlib.metadata import version
 
-if sys.version_info >= (3,8):
-    from importlib.metadata import version
-    __version__ = version('deeplc')
-else:
-    import pkg_resources
-    __version__ = pkg_resources.require("deeplc")[0].version
+from deeplc.core import (
+    calibrate,
+    finetune,
+    finetune_and_predict,
+    predict,
+    predict_and_calibrate,
+    save_model,
+    train,
+)
 
-
-from deeplc.deeplc import DeepLC
-from deeplc.feat_extractor import FeatExtractor
-
+__version__: str = version("deeplc")
+__all__: list[str] = [
+    "calibrate",
+    "predict",
+    "predict_and_calibrate",
+    "finetune_and_predict",
+    "finetune",
+    "save_model",
+    "train",
+]

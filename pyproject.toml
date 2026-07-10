@@ -1,16 +1,20 @@
 [project]
 name = "deeplc"
-version = "3.1.13"
+version = "4.0.0b1"
 description = "DeepLC: Retention time prediction for (modified) peptides using Deep Learning."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
     { name = "Robbin Bouwmeester", email = "robbin.bouwmeester@ugent.be" },
-    { name = "Niels Hulstaert" },
-    { name = "Arthur Declercq" },
     { name = "Ralf Gabriels" },
-    { name = "Lennart Martens" },
+    { name = "Kevin Velghe" },
+    { name = "Robbe Devreese" },
+    { name = "Arthur Declercq" },
+    { name = "Alireza Nameni" },
+    { name = "Ralf Gabriels" },
+    { name = "Niels Hulstaert" },
     { name = "Sven Degroeve" },
+    { name = "Lennart Martens" },
 ]
 classifiers = [
     "Intended Audience :: Science/Research",
@@ -29,35 +33,56 @@ keywords = [
     "retention time",
     "prediction",
 ]
-
 dependencies = [
-    "tensorflow>=2.15.0,<3",
-    "numpy>=1.17",
-    "pandas>=0.25",
-    "scikit-learn>=1.2.0",
-    "deeplcretrainer>=1,<2",
-    "psm_utils>=0.2.3"
+    "torch>=2.6.0,<3",
+    "numpy>=1.17,<3",
+    "pandas>=0.25,<3",
+    "scikit-learn>=1.2.0,<2",
+    "psm-utils>=1.5,<2",
+    "onnx2torch>=1.5,<2",
+    "click>=8,<9",
+    "rich>=13,<15",
 ]
 
 [project.optional-dependencies]
-test = ["pytest", "matplotlib>=3,<4"]
-gui = ["gooey>=1.0"]
-plot = ["plotly>=5"]
-deepcallc = ["scikit-learn<2,>=0.24.0"]
+gui = ["nicegui>=3,<4", "plotly>=5,<6", "pywebview>=5,<6"]
+web = ["nicegui>=3,<4", "plotly>=5,<6"]
 
 [project.scripts]
 deeplc = "deeplc.__main__:main"
-deeplc-gui = "deeplc.gui:start_gui"
 
 [project.urls]
 GitHub = "https://github.com/compomics/deeplc"
 PyPi = "https://pypi.org/project/deeplc/"
 CompOmics = "https://www.compomics.com"
 
+[dependency-groups]
+dev = ["ruff", "pytest", "pyinstaller>=6.21.0"]
+docs = [
+    "numpydoc>=1,<2",
+    "sphinx_rtd_theme",
+    "sphinx-autobuild",
+    "sphinx_mdinclude",
+    "sphinx-click",
+    "sphinx",
+]
+notebooks = ["ipykernel", "ipywidgets", "matplotlib", "seaborn"]
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["deeplc"]
-include-package-data = true
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deeplc*"]
+
+[tool.ruff]
+line-length = 99
+target-version = 'py311'
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "UP", "B", "SIM", "I", "D"]
+ignore = ["D203", "D212"]
+
+[tool.ruff.format]
+docstring-code-format = true

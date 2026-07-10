@@ -1,204 +1,141 @@
-name: Publish to PyPI and GitHub release
+name: Publish
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [created]
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Git ref (branch, tag, or SHA) to build from'
-        required: true
-        default: 'master'   # ← was 'main'
-        type: string
-
-# Least-privilege defaults for all jobs (override per-job if needed)
-permissions:
-  contents: write   # to create releases and read code
-  packages: write   # to push container images to ghcr.io
-  id-token: write   # for PyPI OIDC publish
+      dry_run:
+        description: "Dry run: build and test everything, but skip publishing to PyPI, GHCR, and GitHub releases"
+        type: boolean
+        default: true
 
 jobs:
-  python-package:
+  build-python-package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-    - name: Select ref
-      id: select-ref
-      run: |
-        if [ -n "${{ github.event.inputs.ref }}" ]; then
-          echo "ref=${{ github.event.inputs.ref }}" >> $GITHUB_OUTPUT
-        else
-          # Fallback to the event ref (e.g. refs/tags/v1.2.3 on tag pushes)
-          echo "ref=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-        fi
+      - uses: actions/checkout@v7
 
-    - uses: actions/checkout@v4
-      with:
-        # Checkout the chosen ref for manual runs; for tag-push runs this will be that tag
-        ref: ${{ steps.select-ref.outputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: "pyproject.toml"
 
-    - name: Derive version
-      id: version
-      shell: bash
-      run: |
-        # If the ref looks like a release tag (v*), use it as version (strip refs/tags/ if present)
-        REF="${{ steps.select-ref.outputs.ref }}"
-        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          VER="${GITHUB_REF#refs/tags/}"
-        elif [[ "$REF" == refs/tags/v* ]]; then
-          VER="${REF#refs/tags/}"
-        elif [[ "$REF" == v* ]]; then
-          VER="$REF"
-        else
-          # Fallback for non-tag manual runs
-          VER="manual-${{ github.run_number }}"
-        fi
-        echo "version=$VER" >> $GITHUB_OUTPUT
-        echo "Resolved version: $VER"
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Build
+        run: uv build --no-sources
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build flake8
+      - name: Upload dists
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
 
-    - name: Check for syntax errors
-      run: |
-        flake8 ./deeplc --count --select=E9,F63,F7,F82 --show-source --statistics
+  publish-python-package:
+    needs: build-python-package
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
 
-    - name: Build package
-      run: |
-        python -m build . --sdist --wheel
+    steps:
+      - name: Download dists
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
 
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        skip-existing: true
-
-    - name: Upload compiled wheels
-      uses: actions/upload-artifact@v4
-      with:
-        name: python-wheels
-        path: dist/*.whl
+      - name: Publish to PyPI
+        if: github.event_name == 'release' || inputs.dry_run == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   windows-installer:
     runs-on: windows-latest
-    needs: python-package
+    needs: build-python-package
     steps:
-    - uses: actions/checkout@v4
-      with:
-        # Match the same ref used for building the Python package
-        ref: ${{ needs.python-package.outputs.ref || github.ref }}
-      # If you want to avoid recomputing the ref/version here, you can
-      # alternatively repeat the "Select ref" + "Derive version" steps as above
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install .[gui] pyinstaller
-    - name: Install Inno Setup
-      uses: crazy-max/ghaction-chocolatey@v3
-      with:
-        args: install innosetup -y --allow-unofficial --force
-    - name: Run pyinstaller
-      run: pyinstaller ./deeplc_pyinstaller.spec --clean --noconfirm
-    - name: Test built DeepLC exe
-      run: dist/deeplc/deeplc.exe --ignore-gooey --help
-    - name: Derive version (Windows)
-      id: version
-      shell: bash
-      run: |
-        REF="${{ github.event.inputs.ref }}"
-        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          VER="${GITHUB_REF#refs/tags/}"
-        elif [[ "$REF" == refs/tags/v* ]]; then
-          VER="${REF#refs/tags/}"
-        elif [[ "$REF" == v* ]]; then
-          VER="$REF"
-        else
-          VER="manual-${{ github.run_number }}"
-        fi
-        echo "version=$VER" >> $GITHUB_OUTPUT
-        echo "Resolved version: $VER"
-    - name: Run Inno Setup
-      run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{ steps.version.outputs.version }}
-    - name: Upload installer
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-installer
-        path: dist/*.exe
+      - uses: actions/checkout@v7
 
-  git-release:
+      - name: Sanitize version tag
+        id: tag
+        shell: bash
+        run: echo "tag=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[gui]" pyinstaller
+
+      - name: Install Inno Setup
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install innosetup -y --allow-unofficial --force
+
+      - name: Run PyInstaller
+        run: pyinstaller ./deeplc.spec --clean --noconfirm
+
+      - name: Test built executable
+        run: dist/deeplc/deeplc.exe predict --help
+
+      - name: Run Inno Setup
+        run: ISCC.exe ./deeplc_innosetup.iss /DAppVersion=${{ steps.tag.outputs.tag }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer
+          path: dist/*.exe
+
+      - name: Upload installer to release
+        if: github.event_name == 'release' || inputs.dry_run == 'false'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref }}
+          file_glob: true
+          file: dist/*.exe
+
+  build-docker-image:
     runs-on: ubuntu-latest
-    needs: [python-package, windows-installer]
-    # Only create a GitHub Release when the ref is a v* tag (either push or manual)
-    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.event.inputs.ref, 'v')
+    needs: build-python-package
+    permissions:
+      packages: write
+
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-    - name: Resolve version/tag
-      id: version
-      shell: bash
-      run: |
-        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          VER="${GITHUB_REF#refs/tags/}"
-        elif [[ "${{ github.event.inputs.ref }}" == v* ]]; then
-          VER="${{ github.event.inputs.ref }}"
-        else
-          echo "This job should only run for v* tags."
-          exit 1
-        fi
-        echo "version=$VER" >> $GITHUB_OUTPUT
-        echo "Resolved version: $VER"
+      - name: Sanitize image tag
+        id: tag
+        run: echo "tag=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: dist
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'release' || inputs.dry_run == 'false'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Create GitHub Release
-      # The docker action infers the tag from GITHUB_REF; set it explicitly for manual runs.
-      uses: docker://antonyurchenko/git-release:v6
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        DRAFT_RELEASE: "false"
-        PRE_RELEASE: "false"
-        CHANGELOG_FILE: "CHANGELOG.md"
-        # Provide a synthetic tag ref for manual runs with input v*
-        GITHUB_REF: refs/tags/${{ steps.version.outputs.version }}
-      with:
-        args: |
-          dist/**/*.exe
-          dist/**/*.whl
+      - name: Build and push to ghcr.io
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event_name == 'release' || inputs.dry_run == 'false' }}
+          tags: |
+            ghcr.io/compomics/deeplc:${{ steps.tag.outputs.tag }}
+            ${{ github.event_name == 'release' && 'ghcr.io/compomics/deeplc:latest' || '' }}
 
-  build-streamlit-image:
-    runs-on: ubuntu-latest
-    needs: python-package
-    steps:
-    - uses: actions/checkout@v4
-    - id: latest_release
-      uses: pozetroninc/github-action-get-latest-release@master
-      with:
-        owner: compomics
-        repo: DeepLC
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build and push to ghcr.io
-      uses: docker/build-push-action@v5
-      with:
-        context: streamlit
-        push: true
-        tags: |
-          ghcr.io/compomics/deeplc-streamlit:${{ steps.latest_release.outputs.release }}
-          ghcr.io/compomics/deeplc-streamlit:latest
+      - name: Test Docker image
+        if: github.event_name == 'release' || inputs.dry_run == 'false'
+        run: docker run --rm ghcr.io/compomics/deeplc:${{ steps.tag.outputs.tag }} deeplc --help

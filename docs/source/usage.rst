@@ -1,0 +1,181 @@
+*****
+Usage
+*****
+
+Web application
+===============
+
+A hosted web application is available at
+`iomics.ugent.be/deeplc <https://iomics.ugent.be/deeplc/>`_ — no installation required.
+
+
+Graphical interface
+===================
+
+**Windows:** download the one-click installer from the
+`releases page <https://github.com/compomics/DeepLC/releases/latest>`_.
+
+**Other platforms:** install with GUI dependencies:
+
+.. code-block:: sh
+
+   pip install deeplc[gui]
+
+Then launch as a browser app or native desktop window:
+
+.. code-block:: sh
+
+   deeplc gui            # opens in browser
+   deeplc gui --native   # opens as desktop window
+
+
+Command line interface
+======================
+
+Install DeepLC:
+
+.. code-block:: sh
+
+   pip install deeplc
+   # or
+   conda install -c bioconda -c conda-forge deeplc
+
+Predict retention times for a PSM file:
+
+.. code-block:: sh
+
+   deeplc predict <psm_file>
+
+The input file format is inferred from the extension. All formats supported by
+`psm_utils <https://psm-utils.readthedocs.io/en/stable/api/psm_utils.io.html>`_
+are accepted, including Sage, MaxQuant msms.txt, mzTab, and others. A
+tab-separated file with at least ``peptidoform`` and ``spectrum_id`` columns is
+also accepted directly.
+
+For calibration, pass a reference file with observed retention times using the
+``--psm-file-reference`` option. If no reference file is provided, DeepLC
+attempts automatic calibration from high-confidence PSMs in the input file.
+
+For a full list of options:
+
+.. code-block:: sh
+
+   deeplc predict --help
+
+
+Python API
+==========
+
+The public API consists of a small set of functions in :mod:`deeplc.core`.
+
+Direct prediction
+-----------------
+
+Predict retention times without calibration:
+
+.. code-block:: python
+
+   from psm_utils.io import read_file
+   from deeplc import predict
+
+   psm_list = read_file("results.sage.tsv")
+   rt_predictions = predict(psm_list)  # numpy array, shape (n,)
+
+Prediction with calibration
+----------------------------
+
+Calibrate to observed retention times in a reference set, then predict:
+
+.. code-block:: python
+
+   from psm_utils.io import read_file
+   from deeplc import predict_and_calibrate
+
+   psm_list = read_file("results.sage.tsv")
+
+   # Auto-calibration: selects reference PSMs from psm_list automatically
+   calibrated_rt = predict_and_calibrate(psm_list)
+
+   # Or provide an explicit reference set
+   psm_list_reference = read_file("reference.tsv")
+   calibrated_rt = predict_and_calibrate(psm_list, psm_list_reference=psm_list_reference)
+
+Fine-tuning
+-----------
+
+Fine-tune the model to a specific dataset, then predict:
+
+.. code-block:: python
+
+   from psm_utils.io import read_file
+   from deeplc import finetune_and_predict
+
+   psm_list = read_file("results.sage.tsv")
+   calibrated_rt = finetune_and_predict(psm_list)
+
+For lower-level control, :func:`deeplc.calibrate` and :func:`deeplc.finetune`
+return a fitted :class:`~deeplc.calibration.Calibration` instance and a
+fine-tuned model respectively, which can be reused across multiple prediction
+calls.
+
+See the :doc:`API reference <api/deeplc>` for all parameters and return types.
+
+
+Input file format
+=================
+
+DeepLC accepts any PSM file format supported by
+`psm_utils <https://psm-utils.readthedocs.io/en/stable/api/psm_utils.io.html>`_.
+The format is inferred from the file extension, or can be set explicitly with
+``--psm-filetype``.
+
+A tab-separated file with the following columns is also accepted:
+
+.. code-block:: text
+
+   spectrum_id	peptidoform	retention_time
+   0	AAGPSLSHTSGGTQSK/2	12.16
+   1	AAINQK[Acetyl]LIETGER/2	34.10
+   2	AANDAGYFNDEM[Oxidation]APIEVK/2	37.38
+
+``peptidoform``
+    Peptide sequence in
+    `ProForma 2.0 <https://pubs.acs.org/doi/10.1021/acs.jproteome.1c00771>`_ notation
+    (see `Modifications`_ below).
+
+``spectrum_id``
+    Unique identifier for each PSM.
+
+``retention_time``
+    Observed retention time, required for calibration and fine-tuning.
+
+See `example datasets <https://github.com/compomics/DeepLC/tree/master/examples/datasets>`_
+for additional input file examples.
+
+
+Modifications
+-------------
+
+Modifications are specified as bracketed labels in ProForma 2.0 notation. Labels must be
+resolvable to a known chemical formula:
+
+- A name or accession from a controlled vocabulary: Unimod or PSI-MOD
+  (e.g. ``Oxidation``, ``U:21``, ``MOD:00046``)
+- An elemental formula (e.g. ``Formula:C2H2O``)
+
+All modifications — including fixed modifications such as carbamidomethylation — must be
+present in the peptidoform string. Labels that cannot be resolved to a chemical formula
+(e.g. mass shifts) are ignored; predictions fall back to the unmodified peptide.
+
+DeepLC can predict retention times for any modification, but accuracy depends on whether
+similar modifications were seen during training. For modifications involving elements or
+structural changes not well represented in the training data, prediction accuracy may be
+lower. In such cases, `fine-tuning <Fine-tuning_>`_ the model on a dataset containing
+the modification of interest is recommended.
+
+Custom modifications not in Unimod or PSI-MOD can be encoded with an elemental formula
+directly:
+
+.. code-block:: text
+
+   PEPTI[Formula:C12H20O2]DE
