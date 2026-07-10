@@ -89,9 +89,8 @@ Python API, and input file format.
 
 Full documentation at [deeplc.readthedocs.io](https://deeplc.readthedocs.io):
 
-- [Usage](https://deeplc.readthedocs.io/en/latest/usage.html) — Installation, CLI, Python API, input formats
+- [Usage](https://deeplc.readthedocs.io/en/latest/usage.html) — CLI, Python API, input formats
 - [Prediction models](https://deeplc.readthedocs.io/en/latest/models.html) — Model descriptions and training data
-- [Tutorial](https://deeplc.readthedocs.io/en/latest/tutorial.html) — Worked examples with figures
-- [FAQ](https://deeplc.readthedocs.io/en/latest/faq.html)
+- [Migrating from v3](https://deeplc.readthedocs.io/en/latest/migration.html) — API and format changes
 - [Changelog](https://deeplc.readthedocs.io/en/latest/changelog.html)
 - [Contributing](https://deeplc.readthedocs.io/en/latest/contributing.html)
