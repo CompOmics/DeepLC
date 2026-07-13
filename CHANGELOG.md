@@ -571,7 +571,7 @@ and this project adheres to
 - CLI: Restructured help message
 - Made DeepLC class API docstring consistent with CLI help message
 - Docs: Moved `dict_divider` and `split_cal` explanation to README Q&A section.
-- CI: Only run tests on commits to `master` or from a PR
+- CI: Only run tests on commits to `main` or from a PR
 - Refactoring: Cleaned up `__main__.py`
 - Logging: Changed some loggings from DEBUG to INFO level, some from WARNING to INFO or
   DEBUG level

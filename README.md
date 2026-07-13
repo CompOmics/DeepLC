@@ -1,4 +1,4 @@
-<img src="https://github.com/compomics/DeepLC/raw/master/img/deeplc_logo.png" width="150" height="150" /> <br/><br/>
+<img src="https://github.com/compomics/DeepLC/raw/main/img/deeplc_logo.png" width="150" height="150" /> <br/><br/>
 
 [![GitHub release](https://flat.badgen.net/github/release/compomics/deeplc)](https://github.com/compomics/DeepLC/releases/latest/)
 [![PyPI](https://flat.badgen.net/pypi/v/deeplc)](https://pypi.org/project/deeplc/)

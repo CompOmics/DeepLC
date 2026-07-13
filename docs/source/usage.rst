@@ -149,7 +149,7 @@ A tab-separated file with the following columns is also accepted:
 ``retention_time``
     Observed retention time, required for calibration and fine-tuning.
 
-See `example datasets <https://github.com/compomics/DeepLC/tree/master/examples/datasets>`_
+See `example datasets <https://github.com/compomics/DeepLC/tree/main/examples/datasets>`_
 for additional input file examples.
 
 
