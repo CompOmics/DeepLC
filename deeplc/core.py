@@ -325,6 +325,7 @@ def finetune(
     train_kwargs_local = dict(train_kwargs or {})
     adapter_hidden_size = int(train_kwargs_local.pop("adapter_hidden_size", 256))
     freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
+    train_kwargs_local.setdefault("epochs", 50)
 
     loaded_model = _model_ops.load_model(
         model or DEFAULT_MODEL,
