@@ -262,3 +262,43 @@ class TestShortPeptide:
     def test_two_residues_no_crash(self):
         result = encode_peptidoform("AC")
         assert result["matrix_global"].shape == (_GLOBAL_BASE_LEN,)
+
+
+def test_positional_delta_uses_same_row_as_base_residue():
+    """A modification delta must land on the row of the residue it modifies.
+
+    Regression test: ``_fill_pos_matrix`` offsets rows by ``min(positions)`` so
+    that row 0 means position -4, while modification deltas were written with
+    raw indexing, putting an N-terminal delta four residues from the other end.
+    """
+    from deeplc._features import DEFAULT_POSITIONS, encode_peptidoform
+
+    order = sorted(DEFAULT_POSITIONS)
+    plain = encode_peptidoform("PEPTIDEK")["matrix_global"][7:55].reshape(8, 6)
+    n_term = encode_peptidoform("[Acetyl]-PEPTIDEK")["matrix_global"][7:55].reshape(8, 6)
+    c_term = encode_peptidoform("PEPTIDEK-[Amidated]")["matrix_global"][7:55].reshape(8, 6)
+
+    changed_n = [order[r] for r in range(8) if (n_term[r] - plain[r]).any()]
+    changed_c = [order[r] for r in range(8) if (c_term[r] - plain[r]).any()]
+
+    assert changed_n == [0], f"N-terminal delta landed at {changed_n}, expected position 0"
+    assert changed_c == [-1], f"C-terminal delta landed at {changed_c}, expected position -1"
+
+
+def test_terminal_composition_is_opt_in_and_separates_terminal_from_side_chain():
+    """``[Acetyl]-PEPTIDEK`` and ``P[Acetyl]EPTIDEK`` are chemically different."""
+    import numpy as np
+
+    from deeplc._features import encode_peptidoform
+
+    default_width = encode_peptidoform("PEPTIDEK")["matrix_global"].shape[0]
+    assert default_width == 55, "default global width must not change"
+
+    terminal = encode_peptidoform("[Acetyl]-PEPTIDEK", add_terminal_composition=True)
+    side_chain = encode_peptidoform("P[Acetyl]EPTIDEK", add_terminal_composition=True)
+
+    assert terminal["matrix_global"].shape[0] == 67
+    assert not np.allclose(terminal["matrix_global"], side_chain["matrix_global"])
+    # the acetyl composition C2H2O appears in the N-terminal block only when terminal
+    assert terminal["matrix_global"][55:61].tolist() == [2, 2, 0, 1, 0, 0]
+    assert side_chain["matrix_global"][55:61].tolist() == [0, 0, 0, 0, 0, 0]

@@ -31,6 +31,7 @@ DEFAULT_DICT_INDEX: dict[str, int] = {"C": 0, "H": 1, "N": 2, "O": 3, "S": 4, "P
 def encode_peptidoform(
     peptidoform: Peptidoform | str,
     add_ccs_features: bool = False,
+    add_terminal_composition: bool = False,
     padding_length: int = 60,
     positions: set[int] | None = None,
     positions_pos: set[int] | None = None,
@@ -48,6 +49,12 @@ def encode_peptidoform(
         The peptidoform to encode, either as a Peptidoform object or a string.
     add_ccs_features
         Whether to include CCS features. Default is False.
+    add_terminal_composition
+        Whether to append the N- and C-terminal group compositions to
+        ``matrix_global``, adding 12 values. Default is False, which keeps
+        ``matrix_global`` at its existing width so models trained against it
+        remain valid. Without this, a terminal modification and a side-chain
+        modification on the same residue are indistinguishable.
     padding_length
         The maximum length of the sequence after padding. Default is 60.
     positions
@@ -125,6 +132,10 @@ def encode_peptidoform(
     matrix_sum = _compute_rolling_sum(std_matrix.T, n=2)[:, ::2].T
 
     matrix_global = np.concatenate([matrix_all, pos_matrix.flatten()])
+    if add_terminal_composition:
+        matrix_global = np.concatenate(
+            [matrix_global, _terminal_composition(peptidoform, dict_index).flatten()]
+        )
 
     return {
         "matrix": std_matrix,
@@ -206,6 +217,55 @@ def _fill_pos_matrix(
     return pos_mat
 
 
+def _positional_rows(i: int, seq_len: int, positions: set[int]) -> list[int]:
+    """
+    Rows of the positional matrix that sequence position ``i`` occupies.
+
+    Two corrections over indexing ``pos_mat`` by ``i`` directly:
+
+    * ``_fill_pos_matrix`` lays rows out as ``sorted(positions)``, so row 0 is
+      ``min(positions)``. Raw indexing puts an N-terminal delta in the row that
+      means "fourth residue from the C-terminus".
+    * In a short peptide one residue can occupy both a positive and a negative
+      row, for example index 3 of a 7-mer is also -4. ``_fill_pos_matrix``
+      writes the base residue to both, so a delta must reach both as well.
+    """
+    offset = min(positions)
+    rows = []
+    if i in positions:
+        rows.append(i - offset)
+    if (i - seq_len) in positions:
+        rows.append((i - seq_len) - offset)
+    return rows
+
+
+def _terminal_composition(
+    peptidoform: Peptidoform,
+    dict_index: dict[str, int],
+) -> np.ndarray:
+    """
+    Composition of the N- and C-terminal groups, as two stacked atom vectors.
+
+    Terminal groups are already folded into ``matrix`` and the positional block,
+    but there they are indistinguishable from a modification on the side chain
+    of the first or last residue. ``[Acetyl]-PEPTIDEK`` and ``P[Acetyl]EPTIDEK``
+    otherwise produce identical features, and they do not elute alike.
+    """
+    out = np.zeros((2, len(dict_index)), dtype=np.float16)
+    for row, key in ((0, "n_term"), (1, "c_term")):
+        for tag in peptidoform.properties.get(key) or []:
+            try:
+                composition = tag.composition
+            except Exception:
+                warnings.warn(f"No composition for terminal modification {tag}", stacklevel=2)
+                continue
+            for atom, change in composition.items():
+                index = dict_index.get(atom, dict_index.get(sub(r"\[.*?\]", "", atom)))
+                if index is not None:
+                    out[row, index] += change
+    return out
+
+
 def _apply_composition_to_matrices(
     mat: np.ndarray,
     pos_mat: np.ndarray,
@@ -216,23 +276,25 @@ def _apply_composition_to_matrices(
     dict_index_pos: dict[str, int],
     positions: set[int],
 ) -> None:
-    """Apply a composition delta to the standard and positional matrices."""
+    """Apply a composition delta to the standard and positional matrices.
+
+    Positional rows come from :func:`_positional_rows`, which applies the same
+    offset and the same both-ends handling that :func:`_fill_pos_matrix` uses
+    for base residue compositions.
+    """
+    rows = _positional_rows(i, seq_len, positions)
     for atom_comp, change in composition.items():
         try:
             mat[i, dict_index[atom_comp]] += change
-            if i in positions:
-                pos_mat[i, dict_index_pos[atom_comp]] += change
-            elif (i - seq_len) in positions:
-                pos_mat[i - seq_len, dict_index_pos[atom_comp]] += change
+            for row in rows:
+                pos_mat[row, dict_index_pos[atom_comp]] += change
         except KeyError:
             try:
                 warnings.warn(f"Replacing pattern for atom: {atom_comp}", stacklevel=2)
                 atom_comp_clean = sub(r"\[.*?\]", "", atom_comp)
                 mat[i, dict_index[atom_comp_clean]] += change
-                if i in positions:
-                    pos_mat[i, dict_index_pos[atom_comp_clean]] += change
-                elif (i - seq_len) in positions:
-                    pos_mat[i - seq_len, dict_index_pos[atom_comp_clean]] += change
+                for row in rows:
+                    pos_mat[row, dict_index_pos[atom_comp_clean]] += change
             except KeyError:
                 warnings.warn(f"Ignoring atom {atom_comp} at pos {i}", stacklevel=2)
                 continue
