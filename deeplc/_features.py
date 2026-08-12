@@ -276,7 +276,8 @@ def _apply_composition_to_matrices(
     dict_index_pos: dict[str, int],
     positions: set[int],
 ) -> None:
-    """Apply a composition delta to the standard and positional matrices.
+    """
+    Apply a composition delta to the standard and positional matrices.
 
     Positional rows come from :func:`_positional_rows`, which applies the same
     offset and the same both-ends handling that :func:`_fill_pos_matrix` uses
