@@ -18,6 +18,7 @@ from rich.progress import (
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from deeplc._architecture import DeepLCModel
+from deeplc._composition_architecture import CompositionMultitaskModel
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,11 @@ def load_model(
         # Only checks n_heads and final_num_layers; other hyperparameters are set to defaults
         # May break for models saved with different architectures.
         raw = torch.load(model, weights_only=True, map_location=selected_device)
+        if "head.embedding" in raw:
+            # Composition encoder with a low-rank read-out; shapes are self-describing.
+            loaded_model = CompositionMultitaskModel.from_state_dict(raw)
+            loaded_model.to(selected_device)
+            return loaded_model
         n_heads = raw["heads.b2"].shape[0]
         final_num_layers = sum(
             1 for k in raw if k.startswith("shared_trunk.") and k.endswith(".weight")
@@ -46,14 +52,16 @@ def load_model(
         if "adapter.0.weight" in raw:
             loaded_model.add_adapter(hidden_size=raw["adapter.0.weight"].shape[0])
         loaded_model.load_state_dict(raw)
-    elif isinstance(model, DeepLCModel):
+    elif isinstance(model, torch.nn.Module):
+        # Any nn.Module is accepted so alternative architectures, such as
+        # CompositionMultitaskModel, can be passed in already loaded.
         loaded_model = model
         logger.debug("Using provided PyTorch model instance")
     elif model is None:
         loaded_model = DeepLCModel(n_heads=1)
         logger.debug("Initialized new DeepLCModel with default architecture")
     else:
-        raise TypeError(f"Expected a DeepLCModel or a file path, got {type(model)} instead.")
+        raise TypeError(f"Expected a torch.nn.Module or a file path, got {type(model)} instead.")
 
     loaded_model.to(selected_device)
 

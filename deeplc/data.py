@@ -25,6 +25,7 @@ class DeepLCDataset(Dataset):
         peptidoforms: list[Peptidoform | str],
         target_retention_times: np.ndarray | None = None,
         add_ccs_features: bool = False,
+        add_terminal_composition: bool = False,
     ):
         """
         Initialize the DeepLCDataset.
@@ -39,6 +40,10 @@ class DeepLCDataset(Dataset):
             will be set to NaN.
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
+        add_terminal_composition
+            Whether to append the N- and C-terminal group compositions to ``matrix_global``.
+            Required by models whose ``requires_terminal_composition`` attribute is True.
+            Default is False.
 
         Raises
         ------
@@ -50,6 +55,7 @@ class DeepLCDataset(Dataset):
         self.peptidoforms = peptidoforms
         self.target_retention_times = target_retention_times
         self.add_ccs_features = add_ccs_features
+        self.add_terminal_composition = add_terminal_composition
         if self.target_retention_times is not None and len(self.target_retention_times) != len(
             self.peptidoforms
         ):
@@ -67,7 +73,9 @@ class DeepLCDataset(Dataset):
         if not isinstance(idx, int):
             raise TypeError(f"Index must be an integer, got {type(idx)} instead.")
         features = encode_peptidoform(
-            self.peptidoforms[idx], add_ccs_features=self.add_ccs_features
+            self.peptidoforms[idx],
+            add_ccs_features=self.add_ccs_features,
+            add_terminal_composition=self.add_terminal_composition,
         )
         feature_tuples = (
             torch.from_numpy(features["matrix"]).to(dtype=torch.float32),
@@ -87,6 +95,7 @@ class DeepLCDataset(Dataset):
         cls,
         psm_list: PSMList,
         add_ccs_features: bool = False,
+        add_terminal_composition: bool = False,
     ) -> DeepLCDataset:
         """
         Create a DeepLCDataset from a PSMList.
@@ -97,6 +106,9 @@ class DeepLCDataset(Dataset):
             A PSMList containing the peptidoforms and their corresponding retention times.
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
+        add_terminal_composition
+            Whether to append the terminal group compositions to ``matrix_global``.
+            Default is False.
 
         Returns
         -------
@@ -114,6 +126,7 @@ class DeepLCDataset(Dataset):
             peptidoforms=peptidoforms,
             target_retention_times=target_retention_times,
             add_ccs_features=add_ccs_features,
+            add_terminal_composition=add_terminal_composition,
         )
 
 

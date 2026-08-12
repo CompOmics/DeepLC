@@ -53,9 +53,14 @@ def predict(
         produces multitask output, in which case shape is ``(n, n_heads)``.
 
     """
+    # Load first: the feature encoding a model needs is a property of the model.
+    loaded_model = _model_ops.load_model(model or DEFAULT_MODEL)
     result = _model_ops.predict(
-        model=model or DEFAULT_MODEL,
-        data=DeepLCDataset.from_psm_list(_parse_psms(psm_list)),
+        model=loaded_model,
+        data=DeepLCDataset.from_psm_list(
+            _parse_psms(psm_list),
+            add_terminal_composition=getattr(loaded_model, "requires_terminal_composition", False),
+        ),
         **(predict_kwargs or {}),
     ).numpy()
     if not return_matrix:
