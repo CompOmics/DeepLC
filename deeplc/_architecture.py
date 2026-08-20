@@ -880,6 +880,10 @@ class FlexCNNMultitaskModel(nn.Module):
             "add_terminal_composition": global_dim == 67,
             "add_ccs_features": False,
             "padding_length": 60,
+            # Trained after the 4.0.1 correction to positional modification deltas,
+            # so it wants the corrected placement rather than the compatibility
+            # default DeepLCDataset applies for checkpoints that declare nothing.
+            "legacy_positional_deltas": False,
         }
         self.target_units: str | None = None
         self.task_names: list[str] | None = None

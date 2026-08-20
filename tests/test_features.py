@@ -592,21 +592,84 @@ def test_legacy_and_corrected_placement_differ_on_modified_peptidoforms():
     np.testing.assert_array_equal(legacy["matrix_global"][:7], corrected["matrix_global"][:7])
 
 
-def test_dataset_passes_legacy_flag_through():
-    """``DeepLCDataset`` is the only surface IM2Deep uses, so the flag must reach it."""
+def test_dataset_defaults_to_the_encoding_released_models_expect():
+    """
+    The default must be the pre-4.0.1 placement, not the corrected one.
+
+    This is what lets a downstream package holding a model trained before the
+    correction keep working without changing its call. IM2Deep reaches DeepLC only
+    through ``from_psm_list(psm_list, add_ccs_features=True)``, so that exact call
+    is what is checked here.
+    """
     from deeplc.data import DeepLCDataset
 
     peptidoforms = ["AC[UNIMOD:4]DEK/2", "[UNIMOD:737]-PEPTIDEK/2"]
-    legacy = DeepLCDataset(peptidoforms, add_ccs_features=True, legacy_positional_deltas=True)
-    corrected = DeepLCDataset(peptidoforms, add_ccs_features=True)
+    default = DeepLCDataset.from_psm_list(_psm_list(peptidoforms), add_ccs_features=True)
+    corrected = DeepLCDataset.from_psm_list(
+        _psm_list(peptidoforms), add_ccs_features=True, legacy_positional_deltas=False
+    )
 
-    for index in range(len(peptidoforms)):
-        expected = encode_peptidoform(
-            peptidoforms[index], add_ccs_features=True, legacy_positional_deltas=True
-        )["matrix_global"]
+    for index, proforma in enumerate(peptidoforms):
+        legacy_expected = encode_peptidoform(
+            proforma, add_ccs_features=True, legacy_positional_deltas=True
+        )["matrix_global"].astype(np.float32)
         # The dataset stores float32 while matrix_global is float64, so compare at
         # float32 precision rather than exactly.
-        np.testing.assert_array_equal(
-            legacy[index][0][2].numpy(), expected.astype(np.float32)
+        np.testing.assert_array_equal(default[index][0][2].numpy(), legacy_expected)
+        assert not np.array_equal(default[index][0][2].numpy(), corrected[index][0][2].numpy()), (
+            "the corrected path must still be reachable"
         )
-        assert not np.array_equal(legacy[index][0][2].numpy(), corrected[index][0][2].numpy())
+
+
+def _psm_list(peptidoforms):
+    """Build a PSMList over ``peptidoforms``; from_psm_list does not take strings."""
+    from psm_utils import PSM, PSMList
+
+    return PSMList(
+        psm_list=[
+            PSM(peptidoform=Peptidoform(p), spectrum_id=str(i), retention_time=float(i))
+            for i, p in enumerate(peptidoforms)
+        ]
+    )
+
+
+def test_undescribed_checkpoint_resolves_to_the_legacy_encoding():
+    """
+    Every checkpoint DeepLC has released is a bare state dict with no spec.
+
+    Those models predate the correction, so an absent specification has to mean the
+    old placement or their predictions on modified peptides change silently.
+    """
+    from deeplc.core import _feature_kwargs_from_spec
+
+    for spec in (None, {}):
+        assert _feature_kwargs_from_spec(spec)["legacy_positional_deltas"] is True
+
+
+def test_described_checkpoint_resolves_to_the_corrected_encoding():
+    """A recorded specification is only written by versions that carry the fix."""
+    from deeplc.core import _feature_kwargs_from_spec
+
+    resolved = _feature_kwargs_from_spec({"padding_length": 60, "global_dim": 67})
+    assert resolved["legacy_positional_deltas"] is False
+    assert resolved["padding_length"] == 60
+
+
+def test_described_checkpoint_may_request_the_legacy_encoding():
+    """A model trained on the old placement can say so and be believed."""
+    from deeplc.core import _feature_kwargs_from_spec
+
+    spec = {"padding_length": 60, "legacy_positional_deltas": True}
+    assert _feature_kwargs_from_spec(spec)["legacy_positional_deltas"] is True
+
+
+def test_bundled_multitask_model_declares_its_encoding():
+    """The shipped model was trained after the correction, so it must say so."""
+    import torch
+
+    from deeplc.core import FLEXCNN_MULTITASK_MODEL, _feature_kwargs_from_spec
+
+    blob = torch.load(FLEXCNN_MULTITASK_MODEL, map_location="cpu", weights_only=False)
+    spec = blob["feature_spec"]
+    assert spec["legacy_positional_deltas"] is False
+    assert _feature_kwargs_from_spec(spec)["legacy_positional_deltas"] is False

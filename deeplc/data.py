@@ -27,7 +27,7 @@ class DeepLCDataset(Dataset):
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
         padding_length: int = 60,
-        legacy_positional_deltas: bool = False,
+        legacy_positional_deltas: bool = True,
     ):
         """
         Initialize the DeepLCDataset.
@@ -54,9 +54,19 @@ class DeepLCDataset(Dataset):
             shape and would not raise. Default is 60.
         legacy_positional_deltas
             Whether to place modification deltas in the positional block the way
-            versions before 4.0.1 did. Required by models trained against that
-            encoding, including IM2Deep's CCS models and DeepLC checkpoints from
-            before 4.0.1. Affects modified peptidoforms only. Default is False.
+            versions before 4.0.1 did. That placement was wrong and 4.0.1 corrected
+            it, but every model released against this dataset class was trained on
+            it, so **the default is True**: a dataset exists to feed a model, and
+            feeding a model an encoding it was not trained on changes its
+            predictions on modified peptides without any error.
+
+            Set it to False for a model trained after the correction.
+            :func:`deeplc.core.predict` and :func:`deeplc.core.finetune` do this
+            automatically from the ``feature_spec`` a self-describing checkpoint
+            carries, and :func:`deeplc.core.train` does it for newly trained
+            models. Note that :func:`deeplc._features.encode_peptidoform`, whose
+            job is correct featurisation rather than model compatibility, defaults
+            the other way. Affects modified peptidoforms only.
 
         Raises
         ------
@@ -114,7 +124,7 @@ class DeepLCDataset(Dataset):
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
         padding_length: int = 60,
-        legacy_positional_deltas: bool = False,
+        legacy_positional_deltas: bool = True,
     ) -> DeepLCDataset:
         """
         Create a DeepLCDataset from a PSMList.
@@ -135,9 +145,19 @@ class DeepLCDataset(Dataset):
             shape and would not raise. Default is 60.
         legacy_positional_deltas
             Whether to place modification deltas in the positional block the way
-            versions before 4.0.1 did. Required by models trained against that
-            encoding, including IM2Deep's CCS models and DeepLC checkpoints from
-            before 4.0.1. Affects modified peptidoforms only. Default is False.
+            versions before 4.0.1 did. That placement was wrong and 4.0.1 corrected
+            it, but every model released against this dataset class was trained on
+            it, so **the default is True**: a dataset exists to feed a model, and
+            feeding a model an encoding it was not trained on changes its
+            predictions on modified peptides without any error.
+
+            Set it to False for a model trained after the correction.
+            :func:`deeplc.core.predict` and :func:`deeplc.core.finetune` do this
+            automatically from the ``feature_spec`` a self-describing checkpoint
+            carries, and :func:`deeplc.core.train` does it for newly trained
+            models. Note that :func:`deeplc._features.encode_peptidoform`, whose
+            job is correct featurisation rather than model compatibility, defaults
+            the other way. Affects modified peptidoforms only.
 
         Returns
         -------

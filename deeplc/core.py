@@ -101,11 +101,7 @@ def predict(
     result = _model_ops.predict(
         model=loaded_model,
         data=DeepLCDataset.from_psm_list(
-            _parse_psms(psm_list),
-            add_ccs_features=bool(feature_spec.get("add_ccs_features", False)),
-            add_terminal_composition=bool(feature_spec.get("add_terminal_composition", False)),
-            padding_length=int(feature_spec.get("padding_length", 60)),
-            legacy_positional_deltas=bool(feature_spec.get("legacy_positional_deltas", False)),
+            _parse_psms(psm_list), **_feature_kwargs_from_spec(feature_spec)
         ),
         **kwargs,
     ).numpy()
@@ -331,6 +327,26 @@ def finetune_and_predict(
     return calibrated_rt
 
 
+def _feature_kwargs_from_spec(spec: dict | None) -> dict:
+    """
+    Feature settings a model expects, taken from the specification it carries.
+
+    A checkpoint that records no specification was written before 4.1.0, which
+    means it also predates the 4.0.1 correction to positional modification
+    deltas, so it is fed the encoding it was trained on. Every model DeepLC has
+    released so far is in that position: all five bundled checkpoints are bare
+    state dicts. A checkpoint that does record a specification is read literally,
+    and one written by this version always records the encoding it used.
+    """
+    spec = spec or {}
+    return {
+        "add_ccs_features": bool(spec.get("add_ccs_features", False)),
+        "add_terminal_composition": bool(spec.get("add_terminal_composition", False)),
+        "padding_length": int(spec.get("padding_length", 60)),
+        "legacy_positional_deltas": bool(spec.get("legacy_positional_deltas", not spec)),
+    }
+
+
 def _solve_reference_affine(
     model: torch.nn.Module,
     dataset,
@@ -427,11 +443,7 @@ def finetune(
         model or DEFAULT_MODEL, device=(train_kwargs or {}).get("device")
     )
     _spec = getattr(_peek, "feature_spec", None) or {}
-    _feature_kwargs = {
-        "add_ccs_features": bool(_spec.get("add_ccs_features", False)),
-        "add_terminal_composition": bool(_spec.get("add_terminal_composition", False)),
-        "padding_length": int(_spec.get("padding_length", 60)),
-    }
+    _feature_kwargs = _feature_kwargs_from_spec(_spec)
     training_data = DeepLCDataset.from_psm_list(psm_list_reference, **_feature_kwargs)
     validation_data = (
         DeepLCDataset.from_psm_list(psm_list_validation, **_feature_kwargs)
@@ -591,9 +603,13 @@ def train(
         Trained model.
 
     """
-    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
+    # A model trained here is new, so it gets the corrected encoding rather than
+    # the compatibility default the dataset applies for existing checkpoints.
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference, legacy_positional_deltas=False)
     validation_data = (
-        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+        DeepLCDataset.from_psm_list(psm_list_validation, legacy_positional_deltas=False)
+        if psm_list_validation
+        else None
     )
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split

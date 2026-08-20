@@ -12,18 +12,32 @@ and this project adheres to
 
 - `legacy_positional_deltas`, on `encode_peptidoform` and `DeepLCDataset`, reproducing
   the placement of modification deltas in the positional block exactly as versions
-  before 4.0.1 did. That placement was wrong and 4.0.1 corrected it, but a model trained
-  against it expects it, so downstream packages holding such models can keep their
-  predictions unchanged. Verified bit-identical to a v4.0.0 checkout across 4,760 feature
+  before 4.0.1 did. Verified bit-identical to a v4.0.0 checkout across 4,760 feature
   arrays from 1,190 peptidoforms covering lengths 2 to 70, every modified position, and
-  terminal modifications. Unmodified peptidoforms are unaffected either way. Defaults to
-  False; a self-describing checkpoint can request it through `feature_spec`.
+  terminal modifications. Unmodified peptidoforms are unaffected either way.
+- The feature layout a model expects is now resolved from the specification it carries,
+  in one place. A checkpoint that records no specification was written before 4.1.0, so
+  it also predates the 4.0.1 correction and is fed the encoding it was trained on. One
+  that records a specification is read literally, and every checkpoint this version
+  writes records the encoding it used. `DeepLCDataset` therefore defaults to the
+  pre-4.0.1 placement, since a dataset exists to feed a model; `encode_peptidoform`,
+  whose job is correct featurisation, still defaults to the corrected placement.
+  Newly trained models get the corrected placement.
 
-  IM2Deep is the known case: its CCS models predate the correction and it reaches DeepLC
-  only through `DeepLCDataset.from_psm_list(psm_list, add_ccs_features=True)`. Passing
-  `legacy_positional_deltas=True` there restores its 4.0.0 output exactly; without it,
-  modified peptides shift by up to 7.6 A^2 on the cases tested, and that shift arrived
-  with 4.0.1 rather than with this release.
+### Fixed
+
+- Predictions from models trained before the 4.0.1 feature correction no longer change.
+  4.0.1 corrected where modification deltas land in the positional block, which altered
+  the encoding of every modified peptidoform, while every model released up to that
+  point had been trained on the old encoding. Modified peptides were therefore predicted
+  from input those models had never seen. All five bundled checkpoints are bare state
+  dicts and are now recognised as predating the correction, so their predictions match
+  v4.0.0 exactly again, with no retraining and no change to any calling code.
+
+  This also covers models held by downstream packages. IM2Deep 2.0.2, unmodified,
+  reproduces its v4.0.0 CCS predictions exactly on this release; under 4.0.1 its modified
+  peptides had shifted by up to 7.6 A^2. Note that this means predictions for such models
+  differ from 4.0.1, which is the point: 4.0.1's change to them was not intended.
 
 - Fine-tuning onto a new LC setup for models with a low-rank multitask head, fitting the
   setup's own `rank + 2` parameters with the encoder and pretrained setups frozen: 66
