@@ -105,6 +105,7 @@ def predict(
             add_ccs_features=bool(feature_spec.get("add_ccs_features", False)),
             add_terminal_composition=bool(feature_spec.get("add_terminal_composition", False)),
             padding_length=int(feature_spec.get("padding_length", 60)),
+            legacy_positional_deltas=bool(feature_spec.get("legacy_positional_deltas", False)),
         ),
         **kwargs,
     ).numpy()

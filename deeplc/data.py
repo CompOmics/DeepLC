@@ -27,6 +27,7 @@ class DeepLCDataset(Dataset):
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
         padding_length: int = 60,
+        legacy_positional_deltas: bool = False,
     ):
         """
         Initialize the DeepLCDataset.
@@ -51,6 +52,11 @@ class DeepLCDataset(Dataset):
             value the model was trained with: the fused-trunk architecture pools rather
             than flattens, so a mismatch changes the representation without changing any
             shape and would not raise. Default is 60.
+        legacy_positional_deltas
+            Whether to place modification deltas in the positional block the way
+            versions before 4.0.1 did. Required by models trained against that
+            encoding, including IM2Deep's CCS models and DeepLC checkpoints from
+            before 4.0.1. Affects modified peptidoforms only. Default is False.
 
         Raises
         ------
@@ -64,6 +70,7 @@ class DeepLCDataset(Dataset):
         self.add_ccs_features = add_ccs_features
         self.add_terminal_composition = add_terminal_composition
         self.padding_length = padding_length
+        self.legacy_positional_deltas = legacy_positional_deltas
         if self.target_retention_times is not None and len(self.target_retention_times) != len(
             self.peptidoforms
         ):
@@ -85,6 +92,7 @@ class DeepLCDataset(Dataset):
             add_ccs_features=self.add_ccs_features,
             add_terminal_composition=self.add_terminal_composition,
             padding_length=self.padding_length,
+            legacy_positional_deltas=self.legacy_positional_deltas,
         )
         feature_tuples = (
             torch.from_numpy(features["matrix"]).to(dtype=torch.float32),
@@ -106,6 +114,7 @@ class DeepLCDataset(Dataset):
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
         padding_length: int = 60,
+        legacy_positional_deltas: bool = False,
     ) -> DeepLCDataset:
         """
         Create a DeepLCDataset from a PSMList.
@@ -124,6 +133,11 @@ class DeepLCDataset(Dataset):
             value the model was trained with: the fused-trunk architecture pools rather
             than flattens, so a mismatch changes the representation without changing any
             shape and would not raise. Default is 60.
+        legacy_positional_deltas
+            Whether to place modification deltas in the positional block the way
+            versions before 4.0.1 did. Required by models trained against that
+            encoding, including IM2Deep's CCS models and DeepLC checkpoints from
+            before 4.0.1. Affects modified peptidoforms only. Default is False.
 
         Returns
         -------
@@ -143,6 +157,7 @@ class DeepLCDataset(Dataset):
             add_ccs_features=add_ccs_features,
             add_terminal_composition=add_terminal_composition,
             padding_length=padding_length,
+            legacy_positional_deltas=legacy_positional_deltas,
         )
 
 

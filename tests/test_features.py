@@ -302,3 +302,311 @@ def test_terminal_composition_is_opt_in_and_separates_terminal_from_side_chain()
     # the acetyl composition C2H2O appears in the N-terminal block only when terminal
     assert terminal["matrix_global"][55:61].tolist() == [2, 2, 0, 1, 0, 0]
     assert side_chain["matrix_global"][55:61].tolist() == [0, 0, 0, 0, 0, 0]
+
+
+# LEGACY ENCODING, FOR MODELS TRAINED BEFORE 4.0.1
+
+#: Non-zero entries of ``matrix_global`` as produced by a real v4.0.0 checkout.
+#: Captured by running v4.0.0 rather than derived, so this pins the compatibility
+#: path to what those models were actually trained against. Only modified
+#: peptidoforms are listed, since unmodified ones encode identically either way.
+V400_GLOBAL_NONZERO: dict[str, dict[int, float]] = {
+    "AC[UNIMOD:4]DEK": {
+        0: 23,
+        1: 37,
+        2: 7,
+        3: 10,
+        4: 1,
+        6: 5,
+        7: 3,
+        8: 5,
+        9: 1,
+        10: 1,
+        11: 1,
+        13: 6,
+        14: 8,
+        15: 2,
+        16: 4,
+        19: 5,
+        20: 7,
+        21: 1,
+        22: 3,
+        25: 6,
+        26: 12,
+        27: 2,
+        28: 1,
+        31: 3,
+        32: 5,
+        33: 1,
+        34: 1,
+        37: 3,
+        38: 5,
+        39: 1,
+        40: 1,
+        41: 1,
+        43: 4,
+        44: 5,
+        45: 1,
+        46: 3,
+        49: 5,
+        50: 7,
+        51: 1,
+        52: 3,
+    },
+    "[UNIMOD:737]-PEPTIDEK": {
+        0: 52,
+        1: 83,
+        2: 11,
+        3: 17,
+        6: 8,
+        7: 18,
+        8: 31,
+        9: 3,
+        10: 3,
+        13: 4,
+        14: 5,
+        15: 1,
+        16: 3,
+        19: 5,
+        20: 7,
+        21: 1,
+        22: 3,
+        25: 6,
+        26: 12,
+        27: 2,
+        28: 1,
+        31: 5,
+        32: 7,
+        33: 1,
+        34: 1,
+        37: 5,
+        38: 7,
+        39: 1,
+        40: 3,
+        43: 5,
+        44: 7,
+        45: 1,
+        46: 1,
+        49: 4,
+        50: 7,
+        51: 1,
+        52: 2,
+    },
+    "PEPTIDEK-[UNIMOD:2]": {
+        0: 40,
+        1: 64,
+        2: 10,
+        3: 14,
+        6: 8,
+        7: 6,
+        8: 11,
+        9: 1,
+        10: 1,
+        13: 4,
+        14: 5,
+        15: 1,
+        16: 3,
+        19: 5,
+        20: 7,
+        21: 1,
+        22: 3,
+        25: 6,
+        26: 12,
+        27: 2,
+        28: 1,
+        31: 5,
+        32: 7,
+        33: 1,
+        34: 1,
+        37: 5,
+        38: 7,
+        39: 1,
+        40: 3,
+        43: 5,
+        44: 7,
+        45: 1,
+        46: 1,
+        49: 4,
+        50: 8,
+        51: 2,
+        52: 1,
+    },
+    "M[UNIMOD:35]EEPTIDEK": {
+        0: 45,
+        1: 72,
+        2: 10,
+        3: 19,
+        4: 1,
+        6: 9,
+        7: 6,
+        8: 11,
+        9: 1,
+        10: 2,
+        13: 4,
+        14: 5,
+        15: 1,
+        16: 3,
+        19: 5,
+        20: 7,
+        21: 1,
+        22: 3,
+        25: 6,
+        26: 12,
+        27: 2,
+        28: 1,
+        31: 5,
+        32: 9,
+        33: 1,
+        34: 1,
+        35: 1,
+        37: 5,
+        38: 7,
+        39: 1,
+        40: 3,
+        43: 5,
+        44: 7,
+        45: 1,
+        46: 3,
+        49: 5,
+        50: 7,
+        51: 1,
+        52: 1,
+    },
+    "PEPS[UNIMOD:21]TIDEK": {
+        0: 43,
+        1: 69,
+        2: 10,
+        3: 20,
+        5: 1,
+        6: 9,
+        7: 6,
+        8: 11,
+        9: 1,
+        10: 1,
+        13: 4,
+        14: 5,
+        15: 1,
+        16: 3,
+        19: 5,
+        20: 7,
+        21: 1,
+        22: 3,
+        25: 6,
+        26: 13,
+        27: 2,
+        28: 4,
+        30: 1,
+        31: 5,
+        32: 7,
+        33: 1,
+        34: 1,
+        37: 5,
+        38: 7,
+        39: 1,
+        40: 3,
+        43: 5,
+        44: 7,
+        45: 1,
+        46: 1,
+        49: 3,
+        50: 5,
+        51: 1,
+        52: 2,
+    },
+    "AC[UNIMOD:4]DEKR": {
+        0: 29,
+        1: 49,
+        2: 11,
+        3: 11,
+        4: 1,
+        6: 6,
+        7: 4,
+        8: 5,
+        9: 1,
+        10: 3,
+        13: 7,
+        14: 10,
+        15: 2,
+        16: 4,
+        19: 6,
+        20: 12,
+        21: 2,
+        22: 1,
+        25: 6,
+        26: 12,
+        27: 4,
+        28: 1,
+        31: 3,
+        32: 5,
+        33: 1,
+        34: 1,
+        37: 3,
+        38: 5,
+        39: 1,
+        40: 1,
+        41: 1,
+        43: 4,
+        44: 5,
+        45: 1,
+        46: 3,
+        49: 5,
+        50: 7,
+        51: 1,
+        52: 3,
+    },
+}
+
+
+@pytest.mark.parametrize("proforma", sorted(V400_GLOBAL_NONZERO))
+def test_legacy_positional_deltas_reproduces_v400(proforma):
+    """
+    The compatibility path must match v4.0.0 exactly, not approximately.
+
+    IM2Deep's CCS models and every DeepLC checkpoint from before 4.0.1 were trained
+    against the pre-fix placement, so any deviation here silently changes their
+    predictions on modified peptides.
+    """
+    result = encode_peptidoform(proforma, legacy_positional_deltas=True)["matrix_global"]
+    expected = np.zeros_like(result)
+    for index, value in V400_GLOBAL_NONZERO[proforma].items():
+        expected[index] = value
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("proforma", ["PEPTIDEK", "ACDEK", "LGEYGFQNALIVR", "A" * 70])
+def test_legacy_flag_is_a_no_op_without_modifications(proforma):
+    """An unmodified peptidoform has no deltas to place, so both paths agree."""
+    for key, legacy in encode_peptidoform(proforma, legacy_positional_deltas=True).items():
+        np.testing.assert_array_equal(legacy, encode_peptidoform(proforma)[key], err_msg=key)
+
+
+def test_legacy_and_corrected_placement_differ_on_modified_peptidoforms():
+    """Guards against the flag being silently wired to nothing."""
+    legacy = encode_peptidoform("[Acetyl]-PEPTIDEK", legacy_positional_deltas=True)
+    corrected = encode_peptidoform("[Acetyl]-PEPTIDEK")
+
+    assert not np.array_equal(legacy["matrix_global"], corrected["matrix_global"])
+    # The defect was positional only: the per-residue matrix is unaffected, so the
+    # difference must be confined to the positional block of matrix_global.
+    np.testing.assert_array_equal(legacy["matrix"], corrected["matrix"])
+    np.testing.assert_array_equal(legacy["matrix_global"][:7], corrected["matrix_global"][:7])
+
+
+def test_dataset_passes_legacy_flag_through():
+    """``DeepLCDataset`` is the only surface IM2Deep uses, so the flag must reach it."""
+    from deeplc.data import DeepLCDataset
+
+    peptidoforms = ["AC[UNIMOD:4]DEK/2", "[UNIMOD:737]-PEPTIDEK/2"]
+    legacy = DeepLCDataset(peptidoforms, add_ccs_features=True, legacy_positional_deltas=True)
+    corrected = DeepLCDataset(peptidoforms, add_ccs_features=True)
+
+    for index in range(len(peptidoforms)):
+        expected = encode_peptidoform(
+            peptidoforms[index], add_ccs_features=True, legacy_positional_deltas=True
+        )["matrix_global"]
+        # The dataset stores float32 while matrix_global is float64, so compare at
+        # float32 precision rather than exactly.
+        np.testing.assert_array_equal(
+            legacy[index][0][2].numpy(), expected.astype(np.float32)
+        )
+        assert not np.array_equal(legacy[index][0][2].numpy(), corrected[index][0][2].numpy())

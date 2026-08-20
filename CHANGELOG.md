@@ -10,6 +10,21 @@ and this project adheres to
 
 ### Added
 
+- `legacy_positional_deltas`, on `encode_peptidoform` and `DeepLCDataset`, reproducing
+  the placement of modification deltas in the positional block exactly as versions
+  before 4.0.1 did. That placement was wrong and 4.0.1 corrected it, but a model trained
+  against it expects it, so downstream packages holding such models can keep their
+  predictions unchanged. Verified bit-identical to a v4.0.0 checkout across 4,760 feature
+  arrays from 1,190 peptidoforms covering lengths 2 to 70, every modified position, and
+  terminal modifications. Unmodified peptidoforms are unaffected either way. Defaults to
+  False; a self-describing checkpoint can request it through `feature_spec`.
+
+  IM2Deep is the known case: its CCS models predate the correction and it reaches DeepLC
+  only through `DeepLCDataset.from_psm_list(psm_list, add_ccs_features=True)`. Passing
+  `legacy_positional_deltas=True` there restores its 4.0.0 output exactly; without it,
+  modified peptides shift by up to 7.6 A^2 on the cases tested, and that shift arrived
+  with 4.0.1 rather than with this release.
+
 - Fine-tuning onto a new LC setup for models with a low-rank multitask head, fitting the
   setup's own `rank + 2` parameters with the encoder and pretrained setups frozen: 66
   values at rank 64, against roughly 1.7 million for an adapter over a 6,543-wide head

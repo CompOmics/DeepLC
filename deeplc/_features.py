@@ -39,6 +39,7 @@ def encode_peptidoform(
     dict_aa: dict[str, int] | None = None,
     dict_index_pos: dict[str, int] | None = None,
     dict_index: dict[str, int] | None = None,
+    legacy_positional_deltas: bool = False,
 ) -> dict[str, np.ndarray]:
     """
     Extract features from a single peptidoform.
@@ -57,6 +58,13 @@ def encode_peptidoform(
         modification on the same residue are indistinguishable.
     padding_length
         The maximum length of the sequence after padding. Default is 60.
+    legacy_positional_deltas
+        Whether to place modification deltas in the positional block the way versions
+        before 4.0.1 did, which was to index ``pos_mat`` without the sorted-layout
+        offset and to reach only one row. That placement is wrong, but a model trained
+        against it expects it, so this reproduces it exactly for such models. Affects
+        modified peptidoforms only; unmodified ones encode identically either way.
+        Default is False, meaning the corrected placement.
     positions
         The positions to consider for feature extraction. Default is DEFAULT_POSITIONS.
     positions_pos
@@ -105,6 +113,7 @@ def encode_peptidoform(
         dict_index,
         dict_index_pos,
         positions,
+        legacy_positional_deltas,
     )
     _apply_terminal_modifications(
         std_matrix,
@@ -114,6 +123,7 @@ def encode_peptidoform(
         dict_index,
         dict_index_pos,
         positions,
+        legacy_positional_deltas,
     )
 
     matrix_all = np.sum(std_matrix, axis=0)
@@ -239,6 +249,28 @@ def _positional_rows(i: int, seq_len: int, positions: set[int]) -> list[int]:
     return rows
 
 
+def _legacy_positional_rows(i: int, seq_len: int, positions: set[int]) -> list[int]:
+    """
+    Positional rows as written before version 4.0.1.
+
+    Kept because models trained against that encoding expect it. Two differences
+    from :func:`_positional_rows`, both wrong and both reproduced here:
+
+    * ``pos_mat`` is indexed by ``i`` directly, without subtracting
+      ``min(positions)``. With the default sets the offset is 4, so a delta at
+      sequence position 1 landed in the row meaning position -3, and a negative
+      index wrapped in from the end of the block.
+    * The two cases were ``if``/``elif``, so a residue occupying both a positive
+      and a negative row received the delta in only one of them, while
+      :func:`_fill_pos_matrix` wrote its base composition to both.
+    """
+    if i in positions:
+        return [i]
+    if (i - seq_len) in positions:
+        return [i - seq_len]
+    return []
+
+
 def _terminal_composition(
     peptidoform: Peptidoform,
     dict_index: dict[str, int],
@@ -275,15 +307,21 @@ def _apply_composition_to_matrices(
     dict_index: dict[str, int],
     dict_index_pos: dict[str, int],
     positions: set[int],
+    legacy_positional_deltas: bool = False,
 ) -> None:
     """
     Apply a composition delta to the standard and positional matrices.
 
     Positional rows come from :func:`_positional_rows`, which applies the same
     offset and the same both-ends handling that :func:`_fill_pos_matrix` uses
-    for base residue compositions.
+    for base residue compositions, or from :func:`_legacy_positional_rows` when
+    reproducing the pre-4.0.1 placement for a model trained against it.
     """
-    rows = _positional_rows(i, seq_len, positions)
+    rows = (
+        _legacy_positional_rows(i, seq_len, positions)
+        if legacy_positional_deltas
+        else _positional_rows(i, seq_len, positions)
+    )
     for atom_comp, change in composition.items():
         try:
             mat[i, dict_index[atom_comp]] += change
@@ -311,6 +349,7 @@ def _apply_modifications(
     dict_index: dict[str, int],
     dict_index_pos: dict[str, int],
     positions: set[int],
+    legacy_positional_deltas: bool = False,
 ) -> None:
     """Apply modification changes to the matrices."""
     for i, token in enumerate(parsed_seq):
@@ -332,6 +371,7 @@ def _apply_modifications(
             dict_index,
             dict_index_pos,
             positions,
+            legacy_positional_deltas,
         )
 
 
@@ -343,6 +383,7 @@ def _apply_terminal_modifications(
     dict_index: dict[str, int],
     dict_index_pos: dict[str, int],
     positions: set[int],
+    legacy_positional_deltas: bool = False,
 ) -> None:
     """Apply N- and C-terminal modification changes to the matrices."""
     terminal_mods = [
@@ -370,6 +411,7 @@ def _apply_terminal_modifications(
                 dict_index,
                 dict_index_pos,
                 positions,
+                legacy_positional_deltas,
             )
 
 
