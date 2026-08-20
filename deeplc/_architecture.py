@@ -416,6 +416,92 @@ class DeepLCModel(nn.Module):
         )
         self.adapter.to(self.heads.b2.device)
 
+    @torch.no_grad()
+    def solve_adapter_output(
+        self,
+        x_atom: torch.Tensor,
+        x_atom_sum: torch.Tensor,
+        x_global: torch.Tensor,
+        x_one_hot: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> bool:
+        """
+        Set the adapter's output layer by least squares on the reference data.
+
+        The adapter is otherwise trained from a default initialisation, so its output
+        begins unrelated to minutes and, on a small reference set, can settle on a
+        degenerate fit that predicts every peptide near the mean retention time. Its
+        final layer is linear in its input, so the best output weights and bias for
+        the current earlier layers follow in closed form.
+
+        Returns True when the solve was applied. Called after :meth:`add_adapter` and
+        before training.
+
+        Parameters
+        ----------
+        x_atom, x_atom_sum, x_global, x_one_hot
+            Encoded reference peptidoforms.
+        targets
+            Their observed retention times.
+
+        """
+        adapter = getattr(self, "adapter", None)
+        if adapter is None or not isinstance(adapter[-1], nn.Linear):
+            return False
+
+        was_training = self.training
+        self.eval()
+        try:
+            x_atom_t = x_atom.transpose(1, 2)
+            x_atom_sum_t = x_atom_sum.transpose(1, 2)
+            x_one_hot_t = x_one_hot.transpose(1, 2)
+            concatenated = torch.cat(
+                [
+                    self.branch_a(x_atom_t),
+                    self.branch_b(x_atom_sum_t),
+                    self.branch_c(x_global),
+                    self.branch_d(x_one_hot_t),
+                ],
+                dim=1,
+            )
+            head_vector = self.heads(self.shared_trunk(concatenated))
+            # Everything up to, but not including, the output layer.
+            penultimate = head_vector
+            for layer in list(adapter)[:-1]:
+                penultimate = layer(penultimate)
+        finally:
+            if was_training:
+                self.train()
+
+        features = penultimate.detach().double()
+        y = targets.detach().reshape(-1).double()
+        if features.shape[0] != y.shape[0] or features.shape[0] < 3:
+            return False
+
+        design = torch.cat([features, torch.ones_like(features[:, :1])], dim=1)
+        # Solved on the CPU with a rank-revealing driver, and ridge-regularised. The
+        # adapter's ReLU stack is largely dead at its default initialisation, so the
+        # activations arriving here are often rank deficient; the default CUDA driver
+        # requires full rank and returns non-finite values on such a system, which is
+        # how this solve silently declined to apply.
+        design = design.cpu()
+        target = y.unsqueeze(1).cpu()
+        ridge = 1e-6 * torch.eye(design.shape[1], dtype=design.dtype)
+        try:
+            gram = design.T @ design + ridge
+            solution = torch.linalg.solve(gram, design.T @ target).reshape(-1)
+        except Exception:  # noqa: BLE001 - a singular system leaves the init alone
+            return False
+        if not torch.isfinite(solution).all():
+            return False
+        solution = solution.to(features.device)
+
+        output = adapter[-1]
+        output.weight.copy_(solution[:-1].reshape(1, -1).to(output.weight.dtype))
+        if output.bias is not None:
+            output.bias.copy_(solution[-1].reshape(1).to(output.bias.dtype))
+        return True
+
     def freeze_backbone(self) -> None:
         """Freeze all parameters except the adapter."""
         for name, param in self.named_parameters():

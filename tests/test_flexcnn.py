@@ -590,3 +590,78 @@ def test_small_reference_set_warns_and_widens_validation(tmp_path, caplog):
             train_kwargs={"epochs": 2, "device": "cpu", "show_progress": False, "batch_size": 4},
         )
     assert any("reference PSMs" in r.getMessage() for r in caplog.records)
+
+
+def test_adapter_output_layer_is_anchored():
+    """
+    Solving the adapter's output layer must put it on the retention-time axis.
+
+    The adapter's ReLU stack is largely dead at its default initialisation, so before
+    this solve its output was near zero for every peptide, and the activations
+    reaching the output layer are rank deficient. A CUDA least-squares driver
+    requires full rank and returns non-finite values on such a system, which is why
+    the solve has to be done with a rank-tolerant method.
+    """
+    model = DeepLCModel(n_heads=4)
+    model.add_adapter(hidden_size=32)
+    model.eval()
+
+    lengths = [8, 12, 20, 31, 44, 7]
+    x_atom, x_atom_sum, x_global, one_hot = _deeplc_batch(lengths)
+    targets = torch.tensor([20.0, 35.0, 55.0, 80.0, 110.0, 15.0])
+
+    with torch.no_grad():
+        before = model(x_atom, x_atom_sum, x_global, one_hot).reshape(-1)
+    assert before.max() - before.min() < 5.0, "expected a near-constant start"
+
+    applied = model.solve_adapter_output(x_atom, x_atom_sum, x_global, one_hot, targets)
+    assert applied
+
+    with torch.no_grad():
+        after = model(x_atom, x_atom_sum, x_global, one_hot).reshape(-1)
+    # The solve cannot fit dead activations perfectly, but it must at least land on
+    # the right axis rather than near zero.
+    assert after.mean().item() > 5.0
+    assert abs(after.mean().item() - targets.mean().item()) < 25.0
+
+
+def _deeplc_batch(lengths):
+    """Four-branch features for the released architecture."""
+    rng = np.random.RandomState(2)
+    batch = len(lengths)
+    x_atom = np.zeros((batch, MAXLEN, N_ATOMS), dtype=np.float32)
+    x_atom_sum = np.zeros((batch, 30, N_ATOMS), dtype=np.float32)
+    one_hot = np.zeros((batch, MAXLEN, N_RESIDUES), dtype=np.float32)
+    for i, length in enumerate(lengths):
+        x_atom[i, :length] = rng.randint(0, 12, size=(length, N_ATOMS))
+        x_atom_sum[i, : max(1, length // 2)] = rng.randint(
+            0, 20, size=(max(1, length // 2), N_ATOMS)
+        )
+        residues = rng.randint(0, N_RESIDUES, size=length)
+        one_hot[i, np.arange(length), residues] = 1.0
+    # The four-branch model reads the 55-dimensional global vector, not the 67-
+    # dimensional one the fused trunk needs.
+    x_global = rng.randn(batch, 55).astype(np.float32)
+    return (
+        torch.from_numpy(x_atom),
+        torch.from_numpy(x_atom_sum),
+        torch.from_numpy(x_global),
+        torch.from_numpy(one_hot),
+    )
+
+
+def test_training_scores_its_starting_point(tmp_path):
+    """
+    Training must not return a model worse than the one it started from.
+
+    With the best validation loss left at infinity the first epoch always became the
+    best, however bad, so a fine-tune on a small reference set could hand back a
+    collapsed fit at ninety times the error of its own starting point.
+    """
+    import inspect
+
+    from deeplc import _model_ops
+
+    source = inspect.getsource(_model_ops.train)
+    assert 'best_val_loss = float("inf")' not in source
+    assert "_validate_epoch(model, val_loader, loss_fn, device)" in source

@@ -199,7 +199,14 @@ def train(
     loss_fn = torch.nn.L1Loss()
 
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_val_loss = float("inf")
+
+    # Score the starting point, so training can never return a model worse than the
+    # one it began with. With this left at infinity the first epoch always became the
+    # best, even when it was worse: fine-tuning a small reference set could hand back
+    # a fit whose predictions had collapsed onto the mean retention time, at ninety
+    # times the error of the model it started from.
+    best_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
+    logger.debug("Validation loss before training: %.4f", best_val_loss)
     epochs_no_improve = 0
 
     with _create_progress(disable=not show_progress) as progress:

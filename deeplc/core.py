@@ -31,6 +31,15 @@ DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
 #: 0.48, and at 735 and above fine-tuning helped every version.
 MIN_FINETUNE_REFERENCE = 500
 
+#: A fine-tuned model whose validation error exceeds this fraction of the reference
+#: retention-time span has not converged onto the gradient, whatever the loss curve
+#: said. Measured failures collapse the output range and predict near the mean, so
+#: the error lands at a large fraction of the span: on one 133-minute gradient the
+#: adapter path reached 92 minutes, or 69 % of the span, while its correlation stayed
+#: above 0.9 because the peptide ordering was never what broke. Ordinary fits sit
+#: near 1 %.
+MAX_FINETUNE_ERROR_FRACTION = 0.15
+
 #: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
 #: switching would change every prediction, so the choice is left to the caller
 #: until the calibration path is adapted to its low-rank head.
@@ -321,6 +330,39 @@ def finetune_and_predict(
     return calibrated_rt
 
 
+def _solve_reference_affine(
+    model: torch.nn.Module,
+    dataset,
+    device: str | None = None,
+    adapter: bool = False,
+) -> bool:
+    """
+    Put a freshly attached output on the right axis before training starts.
+
+    Both adaptation paths end in a layer that is linear in its input, so the values
+    that best fit the reference data follow in closed form. Solving them first is what
+    keeps a small reference set from producing a fit that predicts every peptide near
+    the mean retention time.
+
+    Returns True when the solve was applied. A failure is not fatal: training then
+    proceeds from the initialised values, which is the previous behaviour.
+    """
+    try:
+        loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+        features, targets = next(iter(loader))
+        selected = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(selected)
+        moved = tuple(f.to(selected) for f in features)
+        targets = targets.to(selected).float()
+        if adapter:
+            return bool(model.solve_adapter_output(*moved, targets))
+        model.solve_new_task_affine(moved, targets)
+        return True
+    except Exception:  # noqa: BLE001 - never let the anchor break the fit
+        LOGGER.warning("Could not anchor the output layer; training from the initialised values.")
+        return False
+
+
 def finetune(
     psm_list_reference: PSMList,
     psm_list_validation: PSMList | None = None,
@@ -420,22 +462,8 @@ def finetune(
         # with 230 reference peptides the output range shrank to 17 minutes and the
         # error reached 91 minutes, with the correlation still above 0.9 because the
         # ordering was never what broke.
-        try:
-            loader = DataLoader(training_data, batch_size=len(training_data), shuffle=False)
-            features, batch_targets = next(iter(loader))
-            device = train_kwargs_local.get("device") or (
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
-            loaded_model.to(device)
-            loaded_model.solve_new_task_affine(
-                tuple(f.to(device) for f in features),
-                batch_targets.to(device).float(),
-            )
+        if _solve_reference_affine(loaded_model, training_data, train_kwargs_local.get("device")):
             LOGGER.info("Anchored the new setup's scale and shift by least squares.")
-        except Exception:  # noqa: BLE001 - a failed anchor is not fatal
-            LOGGER.warning(
-                "Could not anchor the affine part; falling back to the initialised values."
-            )
         # Sixty-six parameters tolerate, and need, a far larger step than the
         # whole-network default: at 1e-3 the fit is still short of its optimum after
         # twenty-five epochs (1.32 min against 0.86 on a held-out setup).
@@ -449,6 +477,19 @@ def finetune(
     elif hasattr(loaded_model, "add_adapter"):
         loaded_model.add_adapter(hidden_size=adapter_hidden_size)
         train_kwargs_local["freeze_epochs"] = freeze_epochs
+
+        # Put the adapter's output on the right axis before training. From a default
+        # initialisation on a small reference set the fit can collapse onto the mean
+        # retention time: on a 133-minute gradient with 230 reference peptides the
+        # output range shrank to 26 minutes and the error reached 92, with the
+        # correlation still above 0.9 because only the scale was lost.
+        if _solve_reference_affine(
+            loaded_model,
+            training_data,
+            train_kwargs_local.get("device"),
+            adapter=True,
+        ):
+            LOGGER.info("Anchored the adapter's output layer by least squares.")
     else:
         raise NotImplementedError(
             f"{type(loaded_model).__name__} supports neither adapter-based "
@@ -461,7 +502,66 @@ def finetune(
         validation_dataset=validation_dataset,
         **train_kwargs_local,
     )
+
+    _warn_if_fit_collapsed(
+        finetuned_model,
+        validation_dataset,
+        psm_list_reference,
+        device=train_kwargs_local.get("device"),
+    )
     return finetuned_model
+
+
+def _warn_if_fit_collapsed(
+    model: torch.nn.Module,
+    validation_dataset,
+    psm_list_reference: PSMList,
+    device: str | None = None,
+) -> None:
+    """
+    Say so, loudly, when a fine-tuned model is far worse than its own reference data.
+
+    Fine-tuning can converge on a degenerate solution that predicts every peptide
+    near the mean retention time. The loss curve looks unremarkable and the
+    correlation stays high, because the ordering is preserved and only the scale is
+    lost, so nothing in training flags it. Comparing the validation error against the
+    span of the reference retention times does: a collapsed fit lands at a large
+    fraction of the span where a working one sits near a hundredth of it.
+
+    This is a report, not a repair. Whether to fall back to calibration is the
+    caller's decision, and for the adapter path there is no untrained state worth
+    reverting to.
+    """
+    observed = [t for t in psm_list_reference["retention_time"] if t is not None]
+    if len(observed) < 3:
+        return
+    span = float(np.max(observed) - np.min(observed))
+    if span <= 0:
+        return
+
+    try:
+        error = _model_ops.evaluate(model, validation_dataset, device=device)
+    except Exception:  # noqa: BLE001 - the check must never break the fit
+        LOGGER.debug("Could not evaluate the fine-tuned model for the sanity check.")
+        return
+
+    fraction = error / span
+    if fraction > MAX_FINETUNE_ERROR_FRACTION:
+        LOGGER.error(
+            "Fine-tuned validation error is %.2f, which is %.0f %% of the reference "
+            "retention-time span of %.1f. A fit this far off has collapsed rather "
+            "than converged: predictions are probably clustered near the mean "
+            "retention time. Prefer predict() with calibrate() for this dataset.",
+            error,
+            fraction * 100,
+            span,
+        )
+    else:
+        LOGGER.info(
+            "Fine-tuned validation error %.3f, %.1f %% of the reference span.",
+            error,
+            fraction * 100,
+        )
 
 
 def train(

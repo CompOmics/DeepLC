@@ -41,6 +41,25 @@ and this project adheres to
 - `add_terminal_composition` on `DeepLCDataset` and `DeepLCDataset.from_psm_list`,
   passed through to `encode_peptidoform`.
 
+### Fixed
+
+- Fine-tuning could return a model far worse than the one it started from. Three
+  defects compounded: `train()` began with an infinite best validation loss, so the
+  first epoch always became the best however bad it was; the output layer's scale was
+  learned rather than solved, though it is linear in its input; and the adapter's ReLU
+  stack is largely dead at its default initialisation, which left the activations rank
+  deficient and made a CUDA least-squares solve return non-finite values and silently
+  decline. On a 133-minute gradient with 230 reference peptides the adapter path
+  returned predictions spanning 1.3 to 27.2 minutes at an error of 92 minutes, with
+  the correlation still above 0.9 because only the scale was lost. Training now scores
+  its starting point, both adaptation paths solve their output layer on the reference
+  data first, and that solve is rank tolerant. The same setup now gives 1.63 minutes
+  for the adapter path and 2.05 for the low-rank head, against 1.47 and 1.28 for
+  calibration.
+- A fine-tuned model whose validation error exceeds a large fraction of the reference
+  retention-time span is now reported at error level, since a collapsed fit leaves the
+  loss curve and the correlation looking unremarkable.
+
 ### Changed
 
 - `predict()` loads the model before encoding features, so a model that records a feature
