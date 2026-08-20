@@ -42,14 +42,15 @@ class DeepLCDataset(Dataset):
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
         add_terminal_composition
-            Whether to append N- and C-terminal group composition to the global feature
+            Whether to append the N- and C-terminal group composition to the global
+            feature vector, lengthening it from 55 to 67. Required by models trained on
+            that layout; see the ``feature_spec`` recorded in such a model. Default is
+            False.
         padding_length
             Length the per-position matrices are padded or truncated to. Must match the
             value the model was trained with: the fused-trunk architecture pools rather
             than flattens, so a mismatch changes the representation without changing any
             shape and would not raise. Default is 60.
-            vector, lengthening it from 55 to 67. Required by models trained on that
-            layout; see the ``feature_spec`` recorded in such a model. Default is False.
 
         Raises
         ------
@@ -116,13 +117,13 @@ class DeepLCDataset(Dataset):
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
         add_terminal_composition
-            Whether to append terminal group composition to the global feature vector.
+            Whether to append the N- and C-terminal group composition to the global
+            feature vector, lengthening it from 55 to 67. Default is False.
         padding_length
             Length the per-position matrices are padded or truncated to. Must match the
             value the model was trained with: the fused-trunk architecture pools rather
             than flattens, so a mismatch changes the representation without changing any
             shape and would not raise. Default is 60.
-            Default is False.
 
         Returns
         -------
