@@ -673,6 +673,32 @@ class FlexCNNMultitaskModel(nn.Module):
         rank: int = 64,
     ):
         super().__init__()
+        # Kept so the model can describe itself when saved, rather than leaving
+        # the serialiser to know how each architecture is constructed.
+        self._encoder_kwargs = {
+            "global_dim": global_dim,
+            "embed_dim": embed_dim,
+            "channels": tuple(channels),
+            "kernel_size": kernel_size,
+            "stem_channels": stem_channels,
+            "stem_layers": stem_layers,
+            "width": width,
+            "depth": depth,
+        }
+        self._head_kwargs = {"rank": rank}
+        self.n_tasks = n_tasks
+        #: Feature layout this instance expects. Replaced by the value recorded in
+        #: a checkpoint when one is loaded.
+        self.feature_spec: dict | None = {
+            "name": "global67_terminal" if global_dim == 67 else f"global{global_dim}",
+            "global_dim": global_dim,
+            "add_terminal_composition": global_dim == 67,
+            "add_ccs_features": False,
+            "padding_length": 60,
+        }
+        self.target_units: str | None = None
+        self.task_names: list[str] | None = None
+
         self.encoder = _FlexCNNEncoder(
             global_dim=global_dim,
             embed_dim=embed_dim,
@@ -718,6 +744,26 @@ class FlexCNNMultitaskModel(nn.Module):
         """
         del x_atom_sum  # the fused trunk reads x_atom directly
         return self.head(self.encoder(x_atom, x_global, x_one_hot), task_idx)
+
+    def describe(self) -> dict:
+        """
+        Return a serialisable description of this model, including its weights.
+
+        Saving this rather than a bare state dict means a checkpoint can be
+        reloaded without guessing the architecture from tensor names, and it
+        keeps the knowledge of how to rebuild a model with the model rather than
+        in the serialiser.
+        """
+        return {
+            "architecture": type(self).__name__,
+            "encoder_kwargs": dict(self._encoder_kwargs),
+            "head_kwargs": dict(self._head_kwargs),
+            "n_tasks": self.n_tasks,
+            "feature_spec": self.feature_spec,
+            "target_units": self.target_units,
+            "task_names": self.task_names,
+            "state_dict": self.state_dict(),
+        }
 
 
 class _FlexCNNEncoder(nn.Module):

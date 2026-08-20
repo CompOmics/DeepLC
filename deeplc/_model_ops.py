@@ -1,8 +1,9 @@
 """Training, predicting, and evaluating with PyTorch."""
 
 import copy
+import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
 
@@ -241,14 +242,30 @@ def predict(
     num_workers: int = 0,
     num_threads: int | None = None,
     show_progress: bool = True,
+    task_idx: Sequence[int] | None = None,
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
+    # ``task_idx`` selects which LC setups a multitask model evaluates. Without
+    # it a model trained on thousands of setups returns a column per setup: at
+    # 6,543 setups and a million peptides that output alone is tens of gigabytes,
+    # so a caller wanting one column should ask for one column. Models whose
+    # forward does not accept it ignore the argument.
     torch.set_num_threads(num_threads or torch.get_num_threads())
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
     data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    predictions = _predict_epoch(model, data_loader, device, show_progress=show_progress)
+    predictions = _predict_epoch(
+        model, data_loader, device, show_progress=show_progress, task_idx=task_idx
+    )
     return predictions.cpu().detach()
+
+
+def supports_task_subset(model: torch.nn.Module) -> bool:
+    """Whether ``model.forward`` accepts a ``task_idx`` argument."""
+    try:
+        return "task_idx" in inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def evaluate(
@@ -321,16 +338,20 @@ def _predict_epoch(
     data_loader: DataLoader,
     device: str,
     show_progress: bool = False,
+    task_idx: Sequence[int] | None = None,
 ) -> torch.Tensor:
     """Predict using the model for one epoch."""
     model.eval()
+    selected = None
+    if task_idx is not None and supports_task_subset(model):
+        selected = torch.as_tensor(list(task_idx), dtype=torch.long, device=device)
     predictions = []
     with torch.no_grad():
         for features, _ in track(
             data_loader, description="Predicting...", transient=True, disable=not show_progress
         ):
             features = [feature_tensor.to(device) for feature_tensor in features]
-            outputs = model(*features)
+            outputs = model(*features) if selected is None else model(*features, task_idx=selected)
             predictions.append(outputs.cpu())
     if not predictions:
         raise ValueError("Dataset is empty — nothing to predict.")

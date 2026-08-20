@@ -79,15 +79,32 @@ def test_task_subset_matches_full_matrix():
 
 
 def test_padding_does_not_change_prediction():
-    """A peptide's prediction must not depend on how much padding follows it."""
+    """
+    A peptide's prediction must not depend on how much padding follows it.
+
+    Masking is central to this architecture, so the two inputs have to differ in
+    padded length for the test to mean anything: the same ten residues are placed
+    once in a length-20 array and once in a length-60 one.
+    """
     model = FlexCNNMultitaskModel(n_tasks=3, **SMALL).eval()
-    short = make_batch([10], seed=1)
-    # Same peptide, but placed in a batch alongside a much longer one, so the
-    # padded region is identical while the batch statistics differ.
-    padded = [t.clone() for t in short]
+    rng = np.random.RandomState(1)
+    length = 10
+    atoms = rng.randint(0, 12, size=(length, N_ATOMS)).astype(np.float32)
+    residues = rng.randint(0, N_RESIDUES, size=length)
+    x_global = torch.from_numpy(rng.randn(1, GLOBAL_DIM).astype(np.float32))
+
+    def build(padded_to):
+        x_atom = np.zeros((1, padded_to, N_ATOMS), dtype=np.float32)
+        one_hot = np.zeros((1, padded_to, N_RESIDUES), dtype=np.float32)
+        x_atom[0, :length] = atoms
+        one_hot[0, np.arange(length), residues] = 1.0
+        return torch.from_numpy(x_atom), torch.from_numpy(one_hot)
+
+    short_atom, short_hot = build(20)
+    long_atom, long_hot = build(60)
     with torch.no_grad():
-        a = model(*short)
-        b = model(*padded)
+        a = model(short_atom, torch.empty(0), x_global, short_hot)
+        b = model(long_atom, torch.empty(0), x_global, long_hot)
     torch.testing.assert_close(a, b)
 
 
@@ -302,3 +319,174 @@ def test_predictions_are_deterministic(tmp_path):
     first = core.predict(["PEPTIDEK", "ACDEFGHIK"], model=path, return_matrix=True)
     second = core.predict(["PEPTIDEK", "ACDEFGHIK"], model=path, return_matrix=True)
     np.testing.assert_array_equal(first, second)
+
+
+# --------------------------------------------------------------------------- #
+# integration: saving, device handling, and the bundled model
+# --------------------------------------------------------------------------- #
+
+
+def test_public_save_model_round_trips(tmp_path):
+    """
+    ``save_model`` must produce a file ``predict`` can read back.
+
+    Saving a bare state dict for this architecture produced a checkpoint the
+    loader could not rebuild: with no recorded architecture it fell back to
+    inferring one from tensor names and failed on ``heads.b2``.
+    """
+    _, path = _write_described(tmp_path)
+    model = _model_ops.load_model(path, device="cpu")
+
+    copy_path = tmp_path / "copy.pt"
+    core.save_model(model, copy_path)
+
+    reloaded = _model_ops.load_model(copy_path, device="cpu")
+    assert isinstance(reloaded, FlexCNNMultitaskModel)
+    assert reloaded.feature_spec["add_terminal_composition"] is True
+    assert reloaded.task_names == model.task_names
+
+    batch = make_batch([13, 22], seed=5)
+    with torch.no_grad():
+        torch.testing.assert_close(model(*batch), reloaded(*batch))
+
+    # And through the public API, which is how the failure was first seen.
+    out = core.predict(["PEPTIDEK"], model=copy_path)
+    assert out.shape == (1,)
+
+
+def test_single_column_request_does_not_evaluate_every_task(tmp_path):
+    """
+    ``return_matrix=False`` must ask the model for one column, not all of them.
+
+    A model trained on thousands of setups would otherwise build a column per
+    setup and discard all but one; at a million peptides that intermediate is
+    tens of gigabytes.
+    """
+    _, path = _write_described(tmp_path)
+    model = _model_ops.load_model(path, device="cpu")
+
+    seen = {}
+    original_forward = type(model).forward
+
+    def spy(self, *args, task_idx=None, **kwargs):
+        seen["task_idx"] = task_idx
+        return original_forward(self, *args, task_idx=task_idx, **kwargs)
+
+    monkey = type(model)
+    monkey.forward = spy
+    try:
+        single = core.predict(["PEPTIDEK", "ACDEFGHIK"], model=model)
+    finally:
+        monkey.forward = original_forward
+
+    assert single.shape == (2,)
+    assert seen["task_idx"] is not None, "predict should have requested a task subset"
+    assert len(seen["task_idx"]) == 1
+
+
+def test_matrix_request_still_returns_every_task(tmp_path):
+    """Asking for the matrix must not be narrowed by the single-column shortcut."""
+    _, path = _write_described(tmp_path)
+    out = core.predict(["PEPTIDEK"], model=path, return_matrix=True)
+    assert out.shape == (1, 5)
+
+
+def test_requested_device_is_used_for_loading(tmp_path, monkeypatch):
+    """
+    The device from ``predict_kwargs`` must reach ``load_model``.
+
+    Loading first onto the default device and moving afterwards wastes a copy and
+    can fail with a GPU out-of-memory error for a caller who explicitly asked for
+    CPU.
+    """
+    _, path = _write_described(tmp_path)
+    seen = {}
+    real_load = _model_ops.load_model
+
+    def spy(model, device=None):
+        seen["device"] = device
+        return real_load(model, device=device)
+
+    monkeypatch.setattr(_model_ops, "load_model", spy)
+    core.predict(["PEPTIDEK"], model=path, predict_kwargs={"device": "cpu"})
+    assert seen["device"] == "cpu"
+
+
+def test_finetune_rejects_models_without_an_adapter(tmp_path):
+    """
+    Fine-tuning a low-rank-head model must fail with an explanation.
+
+    The adapter interface belongs to the four-branch model; reaching it with this
+    architecture previously raised ``AttributeError: ... has no attribute
+    add_adapter``, which says nothing useful to a caller.
+    """
+    from psm_utils import PSM, PSMList
+
+    _, path = _write_described(tmp_path)
+    psms = PSMList(
+        psm_list=[
+            PSM(peptidoform="PEPTIDEK/2", spectrum_id="1", retention_time=10.0),
+            PSM(peptidoform="ACDEFGHIK/2", spectrum_id="2", retention_time=20.0),
+        ]
+    )
+    with pytest.raises(NotImplementedError, match="adapter-based fine-tuning"):
+        core.finetune(psms, model=path)
+
+
+def test_padding_length_is_taken_from_the_feature_spec(tmp_path):
+    """
+    A recorded ``padding_length`` must reach the encoder.
+
+    This architecture pools rather than flattens, so a mismatch changes the
+    representation without changing any shape and would not raise.
+    """
+    _, path = _write_described(
+        tmp_path,
+        feature_spec={
+            "name": "global67_terminal",
+            "global_dim": GLOBAL_DIM,
+            "add_terminal_composition": True,
+            "add_ccs_features": False,
+            "padding_length": 40,
+        },
+    )
+    model = _model_ops.load_model(path, device="cpu")
+    assert model.feature_spec["padding_length"] == 40
+
+    dataset = DeepLCDataset(["PEPTIDEK"], add_terminal_composition=True, padding_length=40)
+    features, _ = dataset[0]
+    assert features[0].shape[0] == 40
+
+
+def test_bundled_model_predicts_in_minutes():
+    """
+    The packaged checkpoint must load and predict plausible retention times.
+
+    The synthetic round-trip cannot catch packaging drift: wrong metadata, a
+    truncated file, or target scaling left in normalised units would all pass the
+    other tests and fail here.
+    """
+    path = core.FLEXCNN_MULTITASK_MODEL
+    if not path.exists():  # pragma: no cover - packaged with the distribution
+        pytest.skip("bundled model not present")
+
+    model = _model_ops.load_model(path, device="cpu")
+    assert model.n_tasks == 6543
+    assert model.task_names is not None
+    assert len(model.task_names) == 6543
+    assert model.target_units == "minutes"
+    assert model.feature_spec["global_dim"] == GLOBAL_DIM
+
+    peptides = ["LGEYGFQNALIVR", "TVMENFVAFVDK", "PEPTIDEK", "M[UNIMOD:35]NDPKTLLQK"]
+    out = core.predict(peptides, model=path, return_matrix=True)
+    assert out.shape == (len(peptides), 6543)
+    assert np.isfinite(out).all()
+
+    # Retention times in minutes on real gradients: negative values occur on
+    # indexed scales, but nothing should be near a normalised 0-1 range or
+    # implausibly late.
+    assert -100.0 < out.min() < 60.0
+    assert 20.0 < out.max() < 1000.0
+
+    single = core.predict(peptides, model=path)
+    np.testing.assert_allclose(single, out[:, 0], rtol=1e-5)

@@ -62,8 +62,24 @@ def predict(
     # needs depend on the model. A checkpoint that describes itself carries a
     # feature specification, and a model trained on the 67-dimensional global
     # vector cannot be fed the 55-dimensional default.
-    loaded_model = _model_ops.load_model(model or DEFAULT_MODEL)
+    #
+    # The device is taken from predict_kwargs rather than left to default, so a
+    # caller asking for CPU does not first have the checkpoint placed on a GPU
+    # it may not fit on.
+    kwargs = dict(predict_kwargs or {})
+    loaded_model = _model_ops.load_model(model or DEFAULT_MODEL, device=kwargs.get("device"))
     feature_spec = getattr(loaded_model, "feature_spec", None) or {}
+
+    # Only one column is wanted unless the caller asked for the matrix. A model
+    # trained on thousands of LC setups would otherwise materialise a column per
+    # setup, which at a million peptides is tens of gigabytes of output for a
+    # result the caller then throws away.
+    if (
+        not return_matrix
+        and "task_idx" not in kwargs
+        and _model_ops.supports_task_subset(loaded_model)
+    ):
+        kwargs["task_idx"] = [0]
 
     result = _model_ops.predict(
         model=loaded_model,
@@ -71,8 +87,9 @@ def predict(
             _parse_psms(psm_list),
             add_ccs_features=bool(feature_spec.get("add_ccs_features", False)),
             add_terminal_composition=bool(feature_spec.get("add_terminal_composition", False)),
+            padding_length=int(feature_spec.get("padding_length", 60)),
         ),
-        **(predict_kwargs or {}),
+        **kwargs,
     ).numpy()
     if not return_matrix:
         return result[:, 0]
@@ -347,6 +364,13 @@ def finetune(
         model or DEFAULT_MODEL,
         device=train_kwargs_local.get("device"),
     )
+    if not hasattr(loaded_model, "add_adapter"):
+        raise NotImplementedError(
+            f"{type(loaded_model).__name__} does not support adapter-based fine-tuning. "
+            "Models with a low-rank multitask head are adapted by fitting the per-setup "
+            "parameters instead, which is not yet wired into finetune(); use predict() "
+            "with calibrate() for now."
+        )
     loaded_model.add_adapter(hidden_size=adapter_hidden_size)
     train_kwargs_local["freeze_epochs"] = freeze_epochs
 
@@ -415,8 +439,17 @@ def save_model(model: torch.nn.Module, path: PathLike | str) -> None:
     path
         Destination file path.
 
+    Models that can describe themselves are saved with their architecture,
+    constructor arguments and feature specification alongside the weights, so
+    that :func:`load_model` can rebuild them. Saving a bare state dict for such a
+    model produced a file that could not be reloaded, because the loader would
+    fall back to inferring the architecture from tensor names.
+
     """
-    torch.save(model.state_dict(), path)
+    if hasattr(model, "describe"):
+        torch.save(model.describe(), path)
+    else:
+        torch.save(model.state_dict(), path)
 
 
 def _parse_psms(psm_list: PSMList | list[PSM | Peptidoform | str]) -> PSMList:

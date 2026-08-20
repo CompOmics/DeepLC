@@ -26,6 +26,7 @@ class DeepLCDataset(Dataset):
         target_retention_times: np.ndarray | None = None,
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
+        padding_length: int = 60,
     ):
         """
         Initialize the DeepLCDataset.
@@ -42,6 +43,11 @@ class DeepLCDataset(Dataset):
             Whether to include CCS features in the encoded representation. Default is False.
         add_terminal_composition
             Whether to append N- and C-terminal group composition to the global feature
+        padding_length
+            Length the per-position matrices are padded or truncated to. Must match the
+            value the model was trained with: the fused-trunk architecture pools rather
+            than flattens, so a mismatch changes the representation without changing any
+            shape and would not raise. Default is 60.
             vector, lengthening it from 55 to 67. Required by models trained on that
             layout; see the ``feature_spec`` recorded in such a model. Default is False.
 
@@ -56,6 +62,7 @@ class DeepLCDataset(Dataset):
         self.target_retention_times = target_retention_times
         self.add_ccs_features = add_ccs_features
         self.add_terminal_composition = add_terminal_composition
+        self.padding_length = padding_length
         if self.target_retention_times is not None and len(self.target_retention_times) != len(
             self.peptidoforms
         ):
@@ -76,6 +83,7 @@ class DeepLCDataset(Dataset):
             self.peptidoforms[idx],
             add_ccs_features=self.add_ccs_features,
             add_terminal_composition=self.add_terminal_composition,
+            padding_length=self.padding_length,
         )
         feature_tuples = (
             torch.from_numpy(features["matrix"]).to(dtype=torch.float32),
@@ -96,6 +104,7 @@ class DeepLCDataset(Dataset):
         psm_list: PSMList,
         add_ccs_features: bool = False,
         add_terminal_composition: bool = False,
+        padding_length: int = 60,
     ) -> DeepLCDataset:
         """
         Create a DeepLCDataset from a PSMList.
@@ -108,6 +117,11 @@ class DeepLCDataset(Dataset):
             Whether to include CCS features in the encoded representation. Default is False.
         add_terminal_composition
             Whether to append terminal group composition to the global feature vector.
+        padding_length
+            Length the per-position matrices are padded or truncated to. Must match the
+            value the model was trained with: the fused-trunk architecture pools rather
+            than flattens, so a mismatch changes the representation without changing any
+            shape and would not raise. Default is 60.
             Default is False.
 
         Returns
@@ -127,6 +141,7 @@ class DeepLCDataset(Dataset):
             target_retention_times=target_retention_times,
             add_ccs_features=add_ccs_features,
             add_terminal_composition=add_terminal_composition,
+            padding_length=padding_length,
         )
 
 
