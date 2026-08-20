@@ -26,9 +26,7 @@ DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
 #: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
 #: switching would change every prediction, so the choice is left to the caller
 #: until the calibration path is adapted to its low-rank head.
-FLEXCNN_MULTITASK_MODEL = (
-    DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
-)
+FLEXCNN_MULTITASK_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
 
 
 def predict(
@@ -72,9 +70,7 @@ def predict(
         data=DeepLCDataset.from_psm_list(
             _parse_psms(psm_list),
             add_ccs_features=bool(feature_spec.get("add_ccs_features", False)),
-            add_terminal_composition=bool(
-                feature_spec.get("add_terminal_composition", False)
-            ),
+            add_terminal_composition=bool(feature_spec.get("add_terminal_composition", False)),
         ),
         **(predict_kwargs or {}),
     ).numpy()

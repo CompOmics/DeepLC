@@ -262,9 +262,7 @@ def test_bare_state_dict_still_loads(tmp_path):
 def test_terminal_composition_gives_the_expected_width():
     """The terminal block lengthens the global vector from 55 to 67."""
     without = encode_peptidoform("PEPTIDEK")["matrix_global"]
-    with_terminal = encode_peptidoform("PEPTIDEK", add_terminal_composition=True)[
-        "matrix_global"
-    ]
+    with_terminal = encode_peptidoform("PEPTIDEK", add_terminal_composition=True)["matrix_global"]
     assert len(without) == 55
     assert len(with_terminal) == GLOBAL_DIM
     # The shorter vector is a prefix of the longer one.
