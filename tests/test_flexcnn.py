@@ -551,3 +551,42 @@ def test_bundled_model_predicts_in_minutes():
 
     single = core.predict(peptides, model=path)
     np.testing.assert_allclose(single, out[:, 0], rtol=1e-5)
+
+
+def test_small_reference_set_warns_and_widens_validation(tmp_path, caplog):
+    """
+    A reference set too small to fine-tune on must say so.
+
+    On held-out setups, fine-tuning below roughly five hundred reference peptides was
+    worse than calibration every time, once by sixty-fold, because the default
+    validation split left too few PSMs to early-stop against.
+    """
+    import logging
+
+    from psm_utils import PSM, PSMList
+
+    _, path = _write_described(tmp_path)
+    peptides = [
+        "PEPTIDEK",
+        "ACDEFGHIK",
+        "LGEYGFQNALIVR",
+        "TVMENFVAFVDK",
+        "DAFLGSFLYEYSR",
+        "YICDNQDTISSK",
+        "SDKPDMAEIEK",
+        "MNDPKTLLQK",
+    ]
+    psms = PSMList(
+        psm_list=[
+            PSM(peptidoform=f"{p}/2", spectrum_id=str(i), retention_time=float(10 + 3 * i))
+            for i, p in enumerate(peptides)
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deeplc.core"):
+        core.finetune(
+            psms,
+            model=path,
+            train_kwargs={"epochs": 2, "device": "cpu", "show_progress": False, "batch_size": 4},
+        )
+    assert any("reference PSMs" in r.getMessage() for r in caplog.records)

@@ -10,6 +10,22 @@ and this project adheres to
 
 ### Added
 
+- Fine-tuning onto a new LC setup for models with a low-rank multitask head, fitting the
+  setup's own `rank + 2` parameters with the encoder and pretrained setups frozen: 66
+  values at rank 64, against roughly 1.7 million for an adapter over a 6,543-wide head
+  vector. `finetune()` previously refused this architecture.
+- `MIN_FINETUNE_REFERENCE`, with a warning when fine-tuning is attempted on fewer
+  reference PSMs. Measured on six unseen LC setups, fine-tuning was worse than
+  calibration below roughly 500 reference peptidoforms and better above 700; the
+  validation split is widened automatically below the threshold so early stopping has
+  signal to work with.
+- The new setup's `scale` and `shift` are solved by least squares on the reference data
+  before training, rather than learned. Left to the optimiser on a small reference set
+  they collapse: on a 133-minute gradient with 230 reference peptides the output range
+  shrank to 17 minutes and the error reached 91 minutes, with the correlation still above
+  0.9 because the ordering was never what broke. Anchoring them brought that setup to
+  2.2 minutes.
+
 - Fused-trunk multitask architecture (`FlexCNNMultitaskModel`), which merges atomic
   composition with a learned residue embedding in a single convolutional trunk and pools
   over the valid length instead of flattening four separate branches. Available as

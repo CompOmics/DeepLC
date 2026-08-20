@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from psm_utils import PSM, Peptidoform, PSMList
+from torch.utils.data import DataLoader
 
 from deeplc import _model_ops
 from deeplc._reference_selection import select_reference_psms
@@ -22,6 +23,13 @@ LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
+
+#: Below this many reference PSMs, fine-tuning measured worse than calibration on
+#: every held-out setup tried, so it is warned about rather than silently attempted.
+#: On six unseen LC setups the crossover sat between 300 and 735 reference
+#: peptidoforms: at 230 the error went from 1.47 to 91.7 min, at 300 from 0.37 to
+#: 0.48, and at 735 and above fine-tuning helped every version.
+MIN_FINETUNE_REFERENCE = 500
 
 #: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
 #: switching would change every prediction, so the choice is left to the caller
@@ -332,7 +340,9 @@ def finetune(
         used.
     validation_split
         Fraction of ``psm_list_reference`` to use for validation when ``psm_list_validation``
-        is None.
+        is None. Raised to at least 0.25 when the reference set is smaller than
+        :data:`MIN_FINETUNE_REFERENCE`, because early stopping cannot work on a
+        handful of PSMs and an unchecked fit can end up far worse than calibration.
     model
         Trained model or path to model file.
     train_kwargs
@@ -345,6 +355,26 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
+
+    # Fine-tuning needs enough reference data to both fit and validate on. The
+    # default validation split leaves too few PSMs to early-stop against on a small
+    # reference set, which is how a fit ends up worse than the model it started
+    # from; the split is widened here so the stopping signal is usable.
+    n_reference = len(psm_list_reference)
+    if n_reference < MIN_FINETUNE_REFERENCE:
+        LOGGER.warning(
+            "Only %d reference PSMs. Fine-tuning measured worse than calibration "
+            "below about %d on held-out setups, in the worst case by sixty-fold. "
+            "Consider predict() with calibrate() instead.",
+            n_reference,
+            MIN_FINETUNE_REFERENCE,
+        )
+        validation_split = max(validation_split, 0.25)
+        LOGGER.info(
+            "Using a %.0f %% validation split so early stopping has signal.",
+            validation_split * 100,
+        )
+
     if any(psm_list_reference["is_decoy"]):
         # TODO: Move to reusable validation step?
         LOGGER.warning("PSM list contains decoy PSMs. These will be used for fine tuning.")
@@ -384,6 +414,28 @@ def finetune(
             np.asarray([t for t in targets if t is not None], dtype=np.float32)
         )
         n_trainable = loaded_model.add_task_head(targets=targets)
+
+        # Solve the affine part on the reference data before training. Left to the
+        # optimiser on a small reference set it collapses: on one 133-minute gradient
+        # with 230 reference peptides the output range shrank to 17 minutes and the
+        # error reached 91 minutes, with the correlation still above 0.9 because the
+        # ordering was never what broke.
+        try:
+            loader = DataLoader(training_data, batch_size=len(training_data), shuffle=False)
+            features, batch_targets = next(iter(loader))
+            device = train_kwargs_local.get("device") or (
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+            loaded_model.to(device)
+            loaded_model.solve_new_task_affine(
+                tuple(f.to(device) for f in features),
+                batch_targets.to(device).float(),
+            )
+            LOGGER.info("Anchored the new setup's scale and shift by least squares.")
+        except Exception:  # noqa: BLE001 - a failed anchor is not fatal
+            LOGGER.warning(
+                "Could not anchor the affine part; falling back to the initialised values."
+            )
         # Sixty-six parameters tolerate, and need, a far larger step than the
         # whole-network default: at 1e-3 the fit is still short of its optimum after
         # twenty-five epochs (1.32 min against 0.86 on a held-out setup).

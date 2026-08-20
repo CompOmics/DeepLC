@@ -634,6 +634,38 @@ class FactorHead(nn.Module):
             self.new_scale = nn.Parameter(scale)
             self.new_shift = nn.Parameter(shift)
 
+    def project_new_task(self, trunk: torch.Tensor) -> torch.Tensor:
+        """Return the new setup's prediction before scale and shift are applied."""
+        return (self.proj(trunk) @ self.new_embedding.t()).squeeze(-1)
+
+    @torch.no_grad()
+    def solve_new_task_affine(self, projected: torch.Tensor, targets: torch.Tensor) -> None:
+        """
+        Set ``scale`` and ``shift`` by least squares instead of learning them.
+
+        The two are linear in the prediction, so the best values for a given
+        embedding follow in closed form and do not need gradient descent. Leaving
+        them to the optimiser is how fine-tuning fails on a small reference set: with
+        few points the scale decays toward zero and every prediction collapses onto
+        the mean retention time. On one 133-minute gradient with 230 reference
+        peptides that produced a 17-minute output range and a 91-minute error, while
+        the correlation stayed above 0.9 because the ordering was never the problem.
+
+        Solving them first also gives the embedding a sane starting error to descend
+        from, rather than one dominated by a mis-scaled output.
+        """
+        x = projected.detach().reshape(-1).double()
+        y = targets.detach().reshape(-1).double()
+        if x.numel() < 3 or torch.std(x) < 1e-9:
+            return
+        design = torch.stack([x, torch.ones_like(x)], dim=1)
+        solution = torch.linalg.lstsq(design, y.unsqueeze(1)).solution.reshape(-1)
+        slope, intercept = solution[0], solution[1]
+        if not torch.isfinite(slope) or not torch.isfinite(intercept):
+            return
+        self.new_scale.copy_(slope.reshape(1).to(self.new_scale.dtype))
+        self.new_shift.copy_(intercept.reshape(1).to(self.new_shift.dtype))
+
     def freeze_pretrained(self) -> None:
         """Freeze everything except the newly added setup's parameters."""
         for parameter in self.parameters():
@@ -828,6 +860,19 @@ class FlexCNNMultitaskModel(nn.Module):
         for parameter in self.encoder.parameters():
             parameter.requires_grad = False
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    @torch.no_grad()
+    def solve_new_task_affine(
+        self, features: tuple[torch.Tensor, ...], targets: torch.Tensor
+    ) -> None:
+        """
+        Anchor the new setup's affine parameters on the reference data.
+
+        Call after :meth:`add_task_head` and before training, passing the reference
+        features and their observed retention times.
+        """
+        trunk = self.encoder(features[0], features[2], features[3])
+        self.head.solve_new_task_affine(self.head.project_new_task(trunk), targets)
 
     def describe(self) -> dict:
         """
