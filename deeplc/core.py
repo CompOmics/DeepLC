@@ -348,9 +348,22 @@ def finetune(
     if any(psm_list_reference["is_decoy"]):
         # TODO: Move to reusable validation step?
         LOGGER.warning("PSM list contains decoy PSMs. These will be used for fine tuning.")
-    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
+    # The model is loaded further down, but the datasets have to match its feature
+    # specification, so peek at it first.
+    _peek = _model_ops.load_model(
+        model or DEFAULT_MODEL, device=(train_kwargs or {}).get("device")
+    )
+    _spec = getattr(_peek, "feature_spec", None) or {}
+    _feature_kwargs = {
+        "add_ccs_features": bool(_spec.get("add_ccs_features", False)),
+        "add_terminal_composition": bool(_spec.get("add_terminal_composition", False)),
+        "padding_length": int(_spec.get("padding_length", 60)),
+    }
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference, **_feature_kwargs)
     validation_data = (
-        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+        DeepLCDataset.from_psm_list(psm_list_validation, **_feature_kwargs)
+        if psm_list_validation
+        else None
     )
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split
@@ -360,19 +373,35 @@ def finetune(
     freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
     train_kwargs_local.setdefault("epochs", 50)
 
-    loaded_model = _model_ops.load_model(
-        model or DEFAULT_MODEL,
-        device=train_kwargs_local.get("device"),
-    )
-    if not hasattr(loaded_model, "add_adapter"):
-        raise NotImplementedError(
-            f"{type(loaded_model).__name__} does not support adapter-based fine-tuning. "
-            "Models with a low-rank multitask head are adapted by fitting the per-setup "
-            "parameters instead, which is not yet wired into finetune(); use predict() "
-            "with calibrate() for now."
+    loaded_model = _peek
+    if hasattr(loaded_model, "add_task_head"):
+        # A low-rank multitask head is adapted by fitting the new setup's own
+        # rank + 2 parameters with everything else frozen, rather than by training
+        # an adapter over the full head vector. There is nothing to unfreeze part
+        # way through, so freeze_epochs does not apply.
+        targets = psm_list_reference["retention_time"]
+        targets = torch.as_tensor(
+            np.asarray([t for t in targets if t is not None], dtype=np.float32)
         )
-    loaded_model.add_adapter(hidden_size=adapter_hidden_size)
-    train_kwargs_local["freeze_epochs"] = freeze_epochs
+        n_trainable = loaded_model.add_task_head(targets=targets)
+        # Sixty-six parameters tolerate, and need, a far larger step than the
+        # whole-network default: at 1e-3 the fit is still short of its optimum after
+        # twenty-five epochs (1.32 min against 0.86 on a held-out setup).
+        train_kwargs_local.setdefault("learning_rate", 0.05)
+        LOGGER.info(
+            "Fitting %d parameters for the new setup at lr %.3g; encoder and "
+            "pretrained setups are frozen.",
+            n_trainable,
+            train_kwargs_local["learning_rate"],
+        )
+    elif hasattr(loaded_model, "add_adapter"):
+        loaded_model.add_adapter(hidden_size=adapter_hidden_size)
+        train_kwargs_local["freeze_epochs"] = freeze_epochs
+    else:
+        raise NotImplementedError(
+            f"{type(loaded_model).__name__} supports neither adapter-based "
+            "fine-tuning nor a low-rank task head."
+        )
 
     finetuned_model = _model_ops.train(
         model=loaded_model,

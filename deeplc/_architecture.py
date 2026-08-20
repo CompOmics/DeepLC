@@ -585,6 +585,69 @@ class FactorHead(nn.Module):
         self.scale = nn.Parameter(torch.ones(n_tasks))
         self.shift = nn.Parameter(torch.zeros(n_tasks))
 
+    def add_task(self, targets: torch.Tensor | None = None, init_from: int | None = None) -> None:
+        """
+        Attach parameters for one new LC setup and switch to single-task output.
+
+        The new setup gets its own ``rank + 2`` parameters as separate tensors rather
+        than extra rows in the existing ones, so freezing the pretrained setups is a
+        matter of ``requires_grad`` and does not need per-row gradient masking.
+
+        The embedding starts at the mean of the trained setups, which is the least
+        committed starting point available.
+
+        ``scale`` and ``shift`` start from the mean of the trained setups rather than
+        from the target retention times. Setting them directly from the targets looks
+        natural and is wrong by more than an order of magnitude: the dot product they
+        multiply is in the normalised space the model was trained in, roughly 0 to 100,
+        not in minutes, so seeding ``scale`` with a spread measured in minutes
+        overshoots by about thirty-fold and the fit starts hundreds of minutes away.
+        The trained setups' own values are already the right magnitude for mapping that
+        dot product onto a real gradient.
+
+        Parameters
+        ----------
+        targets
+            Observed retention times for the new setup. Used only to nudge the
+            initial offset toward the right part of the gradient.
+        init_from
+            Index of an existing setup to copy from, instead of the mean. Useful when
+            a similar gradient is known.
+
+        """
+        with torch.no_grad():
+            if init_from is None:
+                start = self.embedding.mean(dim=0, keepdim=True).clone()
+                scale = self.scale.mean().reshape(1).clone()
+                shift = self.shift.mean().reshape(1).clone()
+            else:
+                start = self.embedding[init_from : init_from + 1].clone()
+                scale = self.scale[init_from].reshape(1).clone()
+                shift = self.shift[init_from].reshape(1).clone()
+
+            if targets is not None and targets.numel() > 1:
+                # Centre the offset on the observed gradient while leaving the slope
+                # at a trained magnitude, so the fit starts on the right window.
+                shift = shift + (targets.mean() - shift)
+
+            self.new_embedding = nn.Parameter(start)
+            self.new_scale = nn.Parameter(scale)
+            self.new_shift = nn.Parameter(shift)
+
+    def freeze_pretrained(self) -> None:
+        """Freeze everything except the newly added setup's parameters."""
+        for parameter in self.parameters():
+            parameter.requires_grad = False
+        for name in ("new_embedding", "new_scale", "new_shift"):
+            parameter = getattr(self, name, None)
+            if parameter is not None:
+                parameter.requires_grad = True
+
+    @property
+    def has_new_task(self) -> bool:
+        """Whether :meth:`add_task` has been called."""
+        return getattr(self, "new_embedding", None) is not None
+
     def forward(self, trunk: torch.Tensor, task_idx: torch.Tensor | None = None) -> torch.Tensor:
         """
         Map trunk output to one prediction per task.
@@ -605,6 +668,10 @@ class FactorHead(nn.Module):
 
         """
         projected = self.proj(trunk)
+        if self.has_new_task:
+            # Fine-tuned onto one setup: return that column alone, so the shape
+            # matches a single-output model and the training loop needs no change.
+            return (projected @ self.new_embedding.t()) * self.new_scale + self.new_shift
         if task_idx is None:
             return projected @ self.embedding.t() * self.scale + self.shift
         return (projected @ self.embedding[task_idx].t()) * self.scale[task_idx] + self.shift[
@@ -744,6 +811,23 @@ class FlexCNNMultitaskModel(nn.Module):
         """
         del x_atom_sum  # the fused trunk reads x_atom directly
         return self.head(self.encoder(x_atom, x_global, x_one_hot), task_idx)
+
+    def add_task_head(
+        self, targets: torch.Tensor | None = None, init_from: int | None = None
+    ) -> int:
+        """
+        Prepare the model to be fine-tuned onto one new LC setup.
+
+        Adds ``rank + 2`` trainable parameters and freezes everything else, so
+        adapting to a setup costs 66 values at rank 64 rather than retraining a head
+        or fitting an adapter over the full head vector. Returns the number of
+        trainable parameters, which callers log to make the cost visible.
+        """
+        self.head.add_task(targets=targets, init_from=init_from)
+        self.head.freeze_pretrained()
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad = False
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def describe(self) -> dict:
         """

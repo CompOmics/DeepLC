@@ -412,25 +412,86 @@ def test_requested_device_is_used_for_loading(tmp_path, monkeypatch):
     assert seen["device"] == "cpu"
 
 
-def test_finetune_rejects_models_without_an_adapter(tmp_path):
+def test_add_task_head_trains_only_the_new_setup(tmp_path):
     """
-    Fine-tuning a low-rank-head model must fail with an explanation.
+    Adapting to a setup must cost rank + 2 parameters and freeze everything else.
 
-    The adapter interface belongs to the four-branch model; reaching it with this
-    architecture previously raised ``AttributeError: ... has no attribute
-    add_adapter``, which says nothing useful to a caller.
+    This is the architecture's reason for existing, so the count is asserted rather
+    than assumed.
+    """
+    _, path = _write_described(tmp_path)
+    model = _model_ops.load_model(path, device="cpu")
+    total = sum(p.numel() for p in model.parameters())
+
+    trainable = model.add_task_head(targets=torch.tensor([5.0, 10.0, 15.0, 20.0]))
+    assert trainable == SMALL["rank"] + 2
+    assert trainable < total
+    assert all(not p.requires_grad for p in model.encoder.parameters())
+
+    # Output collapses to one column for the new setup, so the training loop and
+    # predict() need no special case.
+    with torch.no_grad():
+        out = model(*make_batch([12, 20]))
+    assert out.shape == (2, 1)
+
+
+def test_finetune_fits_the_low_rank_head(tmp_path):
+    """
+    ``finetune`` adapts a fused-trunk model instead of refusing.
+
+    It previously raised NotImplementedError for this architecture; the low-rank
+    head is now the adaptation path.
     """
     from psm_utils import PSM, PSMList
 
     _, path = _write_described(tmp_path)
+    peptides = [
+        "PEPTIDEK",
+        "ACDEFGHIK",
+        "LGEYGFQNALIVR",
+        "TVMENFVAFVDK",
+        "DAFLGSFLYEYSR",
+        "YICDNQDTISSK",
+        "SDKPDMAEIEK",
+        "MNDPKTLLQK",
+    ]
     psms = PSMList(
         psm_list=[
-            PSM(peptidoform="PEPTIDEK/2", spectrum_id="1", retention_time=10.0),
-            PSM(peptidoform="ACDEFGHIK/2", spectrum_id="2", retention_time=20.0),
+            PSM(peptidoform=f"{p}/2", spectrum_id=str(i), retention_time=float(10 + 3 * i))
+            for i, p in enumerate(peptides)
         ]
     )
-    with pytest.raises(NotImplementedError, match="adapter-based fine-tuning"):
-        core.finetune(psms, model=path)
+    tuned = core.finetune(
+        psms,
+        model=path,
+        validation_split=0.25,
+        train_kwargs={"epochs": 2, "device": "cpu", "show_progress": False, "batch_size": 4},
+    )
+    assert isinstance(tuned, FlexCNNMultitaskModel)
+    assert tuned.head.has_new_task
+
+    out = core.predict(peptides[:3], model=tuned)
+    assert out.shape == (3,)
+    assert np.isfinite(out).all()
+
+
+def test_new_task_scale_starts_at_a_trained_magnitude(tmp_path):
+    """
+    The affine part must not be seeded from target minutes.
+
+    ``scale`` multiplies a dot product in the normalised space the model was trained
+    in, roughly 0 to 100, not in minutes. Seeding it with a spread measured in
+    minutes overshoots by about thirtyfold; on a real setup that put the first
+    prediction some 600 minutes out.
+    """
+    model = FlexCNNMultitaskModel(n_tasks=5, **SMALL)
+    with torch.no_grad():
+        model.head.scale.fill_(0.8)
+        model.head.shift.fill_(3.0)
+    targets = torch.tensor([10.0, 40.0, 70.0, 100.0])  # std about 39 minutes
+    model.head.add_task(targets=targets)
+    assert model.head.new_scale.item() == pytest.approx(0.8, abs=1e-6)
+    assert model.head.new_scale.item() < targets.std().item() / 10
 
 
 def test_padding_length_is_taken_from_the_feature_spec(tmp_path):
