@@ -6,6 +6,95 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `legacy_positional_deltas`, on `encode_peptidoform` and `DeepLCDataset`, reproducing
+  the placement of modification deltas in the positional block exactly as versions
+  before 4.0.1 did. Verified bit-identical to a v4.0.0 checkout across 4,760 feature
+  arrays from 1,190 peptidoforms covering lengths 2 to 70, every modified position, and
+  terminal modifications. Unmodified peptidoforms are unaffected either way.
+- The feature layout a model expects is now resolved from the specification it carries,
+  in one place. A checkpoint that records no specification was written before 4.1.0, so
+  it also predates the 4.0.1 correction and is fed the encoding it was trained on. One
+  that records a specification is read literally, and every checkpoint this version
+  writes records the encoding it used. `DeepLCDataset` therefore defaults to the
+  pre-4.0.1 placement, since a dataset exists to feed a model; `encode_peptidoform`,
+  whose job is correct featurisation, still defaults to the corrected placement.
+  Newly trained models get the corrected placement.
+
+### Fixed
+
+- Predictions from models trained before the 4.0.1 feature correction no longer change.
+  4.0.1 corrected where modification deltas land in the positional block, which altered
+  the encoding of every modified peptidoform, while every model released up to that
+  point had been trained on the old encoding. Modified peptides were therefore predicted
+  from input those models had never seen. All five bundled checkpoints are bare state
+  dicts and are now recognised as predating the correction, so their predictions match
+  v4.0.0 exactly again, with no retraining and no change to any calling code.
+
+  This also covers models held by downstream packages. IM2Deep 2.0.2, unmodified,
+  reproduces its v4.0.0 CCS predictions exactly on this release; under 4.0.1 its modified
+  peptides had shifted by up to 7.6 A^2. Note that this means predictions for such models
+  differ from 4.0.1, which is the point: 4.0.1's change to them was not intended.
+
+- Fine-tuning onto a new LC setup for models with a low-rank multitask head, fitting the
+  setup's own `rank + 2` parameters with the encoder and pretrained setups frozen: 66
+  values at rank 64, against roughly 1.7 million for an adapter over a 6,543-wide head
+  vector. `finetune()` previously refused this architecture.
+- `MIN_FINETUNE_REFERENCE`, with a warning when fine-tuning is attempted on fewer
+  reference PSMs. Measured on six unseen LC setups, fine-tuning was worse than
+  calibration below roughly 500 reference peptidoforms and better above 700; the
+  validation split is widened automatically below the threshold so early stopping has
+  signal to work with.
+- The new setup's `scale` and `shift` are solved by least squares on the reference data
+  before training, rather than learned. Left to the optimiser on a small reference set
+  they collapse: on a 133-minute gradient with 230 reference peptides the output range
+  shrank to 17 minutes and the error reached 91 minutes, with the correlation still above
+  0.9 because the ordering was never what broke. Anchoring them brought that setup to
+  2.2 minutes.
+
+- Fused-trunk multitask architecture (`FlexCNNMultitaskModel`), which merges atomic
+  composition with a learned residue embedding in a single convolutional trunk and pools
+  over the valid length instead of flattening four separate branches. Available as
+  `deeplc.core.FLEXCNN_MULTITASK_MODEL`; the bundled model was trained across 6,543 LC
+  setups and reaches 0.82 min test MAE and 0.24 min median against 1.26 min and 0.51 min
+  for the four-branch backbone on the same data and the same head.
+- `FactorHead`, a low-rank multitask head where a setup owns only `rank + 2` parameters,
+  so adding an LC setup means fitting 66 values with the encoder frozen rather than
+  training a head.
+- Self-describing checkpoints. A model file may now record its architecture, constructor
+  arguments, feature specification and target units, so loading no longer infers the
+  architecture from tensor shapes. Bare state dicts continue to load unchanged.
+- `add_terminal_composition` on `DeepLCDataset` and `DeepLCDataset.from_psm_list`,
+  passed through to `encode_peptidoform`.
+
+### Fixed
+
+- Fine-tuning could return a model far worse than the one it started from. Three
+  defects compounded: `train()` began with an infinite best validation loss, so the
+  first epoch always became the best however bad it was; the output layer's scale was
+  learned rather than solved, though it is linear in its input; and the adapter's ReLU
+  stack is largely dead at its default initialisation, which left the activations rank
+  deficient and made a CUDA least-squares solve return non-finite values and silently
+  decline. On a 133-minute gradient with 230 reference peptides the adapter path
+  returned predictions spanning 1.3 to 27.2 minutes at an error of 92 minutes, with
+  the correlation still above 0.9 because only the scale was lost. Training now scores
+  its starting point, both adaptation paths solve their output layer on the reference
+  data first, and that solve is rank tolerant. The same setup now gives 1.63 minutes
+  for the adapter path and 2.05 for the low-rank head, against 1.47 and 1.28 for
+  calibration.
+- A fine-tuned model whose validation error exceeds a large fraction of the reference
+  retention-time span is now reported at error level, since a collapsed fit leaves the
+  loss curve and the correlation looking unremarkable.
+
+### Changed
+
+- `predict()` loads the model before encoding features, so a model that records a feature
+  specification gets the features it was trained on. Previously the dataset was always
+  built with defaults.
+
 ## [4.0.0] - 2026-07-24
 
 ### Changed

@@ -1,8 +1,9 @@
 """Training, predicting, and evaluating with PyTorch."""
 
 import copy
+import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from rich.progress import (
 )
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from deeplc._architecture import DeepLCModel
+from deeplc._architecture import DeepLCModel, FlexCNNMultitaskModel
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,17 @@ def load_model(
     )
 
     if isinstance(model, (str, PathLike, Path)):
+        raw = torch.load(model, weights_only=True, map_location=selected_device)
+
+        # Newer checkpoints are a dict describing the model rather than a bare
+        # state dict, so the architecture and its hyperparameters do not have to
+        # be guessed from tensor shapes. Older files keep working unchanged.
+        if isinstance(raw, dict) and "architecture" in raw:
+            return _load_described_model(raw, selected_device)
+
         # Infer architecture hyperparameters from the saved state dict
         # Only checks n_heads and final_num_layers; other hyperparameters are set to defaults
         # May break for models saved with different architectures.
-        raw = torch.load(model, weights_only=True, map_location=selected_device)
         n_heads = raw["heads.b2"].shape[0]
         final_num_layers = sum(
             1 for k in raw if k.startswith("shared_trunk.") and k.endswith(".weight")
@@ -46,7 +54,7 @@ def load_model(
         if "adapter.0.weight" in raw:
             loaded_model.add_adapter(hidden_size=raw["adapter.0.weight"].shape[0])
         loaded_model.load_state_dict(raw)
-    elif isinstance(model, DeepLCModel):
+    elif isinstance(model, (DeepLCModel, FlexCNNMultitaskModel)):
         loaded_model = model
         logger.debug("Using provided PyTorch model instance")
     elif model is None:
@@ -58,6 +66,55 @@ def load_model(
     loaded_model.to(selected_device)
 
     return loaded_model
+
+
+#: Architectures a described checkpoint may name, and the class to build.
+_DESCRIBED_ARCHITECTURES = {
+    "FlexCNNMultitaskModel": FlexCNNMultitaskModel,
+}
+
+
+def _load_described_model(blob: dict, device: torch.device | str) -> torch.nn.Module:
+    """
+    Build a model from a checkpoint that describes itself.
+
+    The checkpoint carries the architecture name, its constructor arguments and
+    the feature specification it was trained against. That last part matters:
+    the model's first dense layer fixes the width of the global feature vector,
+    so a model expecting terminal composition cannot be fed the shorter default
+    vector. Attaching the specification to the returned module lets the caller
+    build a matching dataset instead of inferring it.
+    """
+    name = blob["architecture"]
+    try:
+        cls = _DESCRIBED_ARCHITECTURES[name]
+    except KeyError:
+        raise ValueError(
+            f"Checkpoint names architecture {name!r}, which this version of DeepLC "
+            f"does not know. Known architectures: "
+            f"{sorted(_DESCRIBED_ARCHITECTURES)}."
+        ) from None
+
+    kwargs = dict(blob.get("encoder_kwargs") or {})
+    kwargs.update(blob.get("head_kwargs") or {})
+    built = cls(n_tasks=blob["n_tasks"], **kwargs)
+    built.load_state_dict(blob["state_dict"])
+
+    # Carried on the instance so predict() can build a matching dataset.
+    built.feature_spec = blob.get("feature_spec")
+    built.target_units = blob.get("target_units")
+    built.task_names = blob.get("task_names")
+
+    logger.debug(
+        "Loaded %s with %d tasks, feature spec %s, targets in %s",
+        name,
+        blob["n_tasks"],
+        (built.feature_spec or {}).get("name", "unspecified"),
+        built.target_units or "unspecified units",
+    )
+    built.to(device)
+    built.eval()
+    return built
 
 
 def train(
@@ -142,7 +199,14 @@ def train(
     loss_fn = torch.nn.L1Loss()
 
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_val_loss = float("inf")
+
+    # Score the starting point, so training can never return a model worse than the
+    # one it began with. With this left at infinity the first epoch always became the
+    # best, even when it was worse: fine-tuning a small reference set could hand back
+    # a fit whose predictions had collapsed onto the mean retention time, at ninety
+    # times the error of the model it started from.
+    best_val_loss = _validate_epoch(model, val_loader, loss_fn, device)
+    logger.debug("Validation loss before training: %.4f", best_val_loss)
     epochs_no_improve = 0
 
     with _create_progress(disable=not show_progress) as progress:
@@ -185,14 +249,30 @@ def predict(
     num_workers: int = 0,
     num_threads: int | None = None,
     show_progress: bool = True,
+    task_idx: Sequence[int] | None = None,
 ) -> torch.Tensor:
     """Predict using the model for the given dataset."""
+    # ``task_idx`` selects which LC setups a multitask model evaluates. Without
+    # it a model trained on thousands of setups returns a column per setup: at
+    # 6,543 setups and a million peptides that output alone is tens of gigabytes,
+    # so a caller wanting one column should ask for one column. Models whose
+    # forward does not accept it ignore the argument.
     torch.set_num_threads(num_threads or torch.get_num_threads())
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
     data_loader = DataLoader(data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    predictions = _predict_epoch(model, data_loader, device, show_progress=show_progress)
+    predictions = _predict_epoch(
+        model, data_loader, device, show_progress=show_progress, task_idx=task_idx
+    )
     return predictions.cpu().detach()
+
+
+def supports_task_subset(model: torch.nn.Module) -> bool:
+    """Whether ``model.forward`` accepts a ``task_idx`` argument."""
+    try:
+        return "task_idx" in inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def evaluate(
@@ -265,16 +345,20 @@ def _predict_epoch(
     data_loader: DataLoader,
     device: str,
     show_progress: bool = False,
+    task_idx: Sequence[int] | None = None,
 ) -> torch.Tensor:
     """Predict using the model for one epoch."""
     model.eval()
+    selected = None
+    if task_idx is not None and supports_task_subset(model):
+        selected = torch.as_tensor(list(task_idx), dtype=torch.long, device=device)
     predictions = []
     with torch.no_grad():
         for features, _ in track(
             data_loader, description="Predicting...", transient=True, disable=not show_progress
         ):
             features = [feature_tensor.to(device) for feature_tensor in features]
-            outputs = model(*features)
+            outputs = model(*features) if selected is None else model(*features, task_idx=selected)
             predictions.append(outputs.cpu())
     if not predictions:
         raise ValueError("Dataset is empty — nothing to predict.")

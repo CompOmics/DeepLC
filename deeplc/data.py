@@ -25,6 +25,9 @@ class DeepLCDataset(Dataset):
         peptidoforms: list[Peptidoform | str],
         target_retention_times: np.ndarray | None = None,
         add_ccs_features: bool = False,
+        add_terminal_composition: bool = False,
+        padding_length: int = 60,
+        legacy_positional_deltas: bool = True,
     ):
         """
         Initialize the DeepLCDataset.
@@ -39,6 +42,31 @@ class DeepLCDataset(Dataset):
             will be set to NaN.
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
+        add_terminal_composition
+            Whether to append the N- and C-terminal group composition to the global
+            feature vector, lengthening it from 55 to 67. Required by models trained on
+            that layout; see the ``feature_spec`` recorded in such a model. Default is
+            False.
+        padding_length
+            Length the per-position matrices are padded or truncated to. Must match the
+            value the model was trained with: the fused-trunk architecture pools rather
+            than flattens, so a mismatch changes the representation without changing any
+            shape and would not raise. Default is 60.
+        legacy_positional_deltas
+            Whether to place modification deltas in the positional block the way
+            versions before 4.0.1 did. That placement was wrong and 4.0.1 corrected
+            it, but every model released against this dataset class was trained on
+            it, so **the default is True**: a dataset exists to feed a model, and
+            feeding a model an encoding it was not trained on changes its
+            predictions on modified peptides without any error.
+
+            Set it to False for a model trained after the correction.
+            :func:`deeplc.core.predict` and :func:`deeplc.core.finetune` do this
+            automatically from the ``feature_spec`` a self-describing checkpoint
+            carries, and :func:`deeplc.core.train` does it for newly trained
+            models. Note that :func:`deeplc._features.encode_peptidoform`, whose
+            job is correct featurisation rather than model compatibility, defaults
+            the other way. Affects modified peptidoforms only.
 
         Raises
         ------
@@ -50,6 +78,9 @@ class DeepLCDataset(Dataset):
         self.peptidoforms = peptidoforms
         self.target_retention_times = target_retention_times
         self.add_ccs_features = add_ccs_features
+        self.add_terminal_composition = add_terminal_composition
+        self.padding_length = padding_length
+        self.legacy_positional_deltas = legacy_positional_deltas
         if self.target_retention_times is not None and len(self.target_retention_times) != len(
             self.peptidoforms
         ):
@@ -67,7 +98,11 @@ class DeepLCDataset(Dataset):
         if not isinstance(idx, int):
             raise TypeError(f"Index must be an integer, got {type(idx)} instead.")
         features = encode_peptidoform(
-            self.peptidoforms[idx], add_ccs_features=self.add_ccs_features
+            self.peptidoforms[idx],
+            add_ccs_features=self.add_ccs_features,
+            add_terminal_composition=self.add_terminal_composition,
+            padding_length=self.padding_length,
+            legacy_positional_deltas=self.legacy_positional_deltas,
         )
         feature_tuples = (
             torch.from_numpy(features["matrix"]).to(dtype=torch.float32),
@@ -87,6 +122,9 @@ class DeepLCDataset(Dataset):
         cls,
         psm_list: PSMList,
         add_ccs_features: bool = False,
+        add_terminal_composition: bool = False,
+        padding_length: int = 60,
+        legacy_positional_deltas: bool = True,
     ) -> DeepLCDataset:
         """
         Create a DeepLCDataset from a PSMList.
@@ -97,6 +135,29 @@ class DeepLCDataset(Dataset):
             A PSMList containing the peptidoforms and their corresponding retention times.
         add_ccs_features
             Whether to include CCS features in the encoded representation. Default is False.
+        add_terminal_composition
+            Whether to append the N- and C-terminal group composition to the global
+            feature vector, lengthening it from 55 to 67. Default is False.
+        padding_length
+            Length the per-position matrices are padded or truncated to. Must match the
+            value the model was trained with: the fused-trunk architecture pools rather
+            than flattens, so a mismatch changes the representation without changing any
+            shape and would not raise. Default is 60.
+        legacy_positional_deltas
+            Whether to place modification deltas in the positional block the way
+            versions before 4.0.1 did. That placement was wrong and 4.0.1 corrected
+            it, but every model released against this dataset class was trained on
+            it, so **the default is True**: a dataset exists to feed a model, and
+            feeding a model an encoding it was not trained on changes its
+            predictions on modified peptides without any error.
+
+            Set it to False for a model trained after the correction.
+            :func:`deeplc.core.predict` and :func:`deeplc.core.finetune` do this
+            automatically from the ``feature_spec`` a self-describing checkpoint
+            carries, and :func:`deeplc.core.train` does it for newly trained
+            models. Note that :func:`deeplc._features.encode_peptidoform`, whose
+            job is correct featurisation rather than model compatibility, defaults
+            the other way. Affects modified peptidoforms only.
 
         Returns
         -------
@@ -114,6 +175,9 @@ class DeepLCDataset(Dataset):
             peptidoforms=peptidoforms,
             target_retention_times=target_retention_times,
             add_ccs_features=add_ccs_features,
+            add_terminal_composition=add_terminal_composition,
+            padding_length=padding_length,
+            legacy_positional_deltas=legacy_positional_deltas,
         )
 
 

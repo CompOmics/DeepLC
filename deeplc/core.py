@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from psm_utils import PSM, Peptidoform, PSMList
+from torch.utils.data import DataLoader
 
 from deeplc import _model_ops
 from deeplc._reference_selection import select_reference_psms
@@ -22,6 +23,27 @@ LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
+
+#: Below this many reference PSMs, fine-tuning measured worse than calibration on
+#: every held-out setup tried, so it is warned about rather than silently attempted.
+#: On six unseen LC setups the crossover sat between 300 and 735 reference
+#: peptidoforms: at 230 the error went from 1.47 to 91.7 min, at 300 from 0.37 to
+#: 0.48, and at 735 and above fine-tuning helped every version.
+MIN_FINETUNE_REFERENCE = 500
+
+#: A fine-tuned model whose validation error exceeds this fraction of the reference
+#: retention-time span has not converged onto the gradient, whatever the loss curve
+#: said. Measured failures collapse the output range and predict near the mean, so
+#: the error lands at a large fraction of the span: on one 133-minute gradient the
+#: adapter path reached 92 minutes, or 69 % of the span, while its correlation stayed
+#: above 0.9 because the peptide ordering was never what broke. Ordinary fits sit
+#: near 1 %.
+MAX_FINETUNE_ERROR_FRACTION = 0.15
+
+#: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
+#: switching would change every prediction, so the choice is left to the caller
+#: until the calibration path is adapted to its low-rank head.
+FLEXCNN_MULTITASK_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
 
 
 def predict(
@@ -53,10 +75,35 @@ def predict(
         produces multitask output, in which case shape is ``(n, n_heads)``.
 
     """
+    # The model is loaded before the dataset is built because the features it
+    # needs depend on the model. A checkpoint that describes itself carries a
+    # feature specification, and a model trained on the 67-dimensional global
+    # vector cannot be fed the 55-dimensional default.
+    #
+    # The device is taken from predict_kwargs rather than left to default, so a
+    # caller asking for CPU does not first have the checkpoint placed on a GPU
+    # it may not fit on.
+    kwargs = dict(predict_kwargs or {})
+    loaded_model = _model_ops.load_model(model or DEFAULT_MODEL, device=kwargs.get("device"))
+    feature_spec = getattr(loaded_model, "feature_spec", None) or {}
+
+    # Only one column is wanted unless the caller asked for the matrix. A model
+    # trained on thousands of LC setups would otherwise materialise a column per
+    # setup, which at a million peptides is tens of gigabytes of output for a
+    # result the caller then throws away.
+    if (
+        not return_matrix
+        and "task_idx" not in kwargs
+        and _model_ops.supports_task_subset(loaded_model)
+    ):
+        kwargs["task_idx"] = [0]
+
     result = _model_ops.predict(
-        model=model or DEFAULT_MODEL,
-        data=DeepLCDataset.from_psm_list(_parse_psms(psm_list)),
-        **(predict_kwargs or {}),
+        model=loaded_model,
+        data=DeepLCDataset.from_psm_list(
+            _parse_psms(psm_list), **_feature_kwargs_from_spec(feature_spec)
+        ),
+        **kwargs,
     ).numpy()
     if not return_matrix:
         return result[:, 0]
@@ -280,6 +327,59 @@ def finetune_and_predict(
     return calibrated_rt
 
 
+def _feature_kwargs_from_spec(spec: dict | None) -> dict:
+    """
+    Feature settings a model expects, taken from the specification it carries.
+
+    A checkpoint that records no specification was written before 4.1.0, which
+    means it also predates the 4.0.1 correction to positional modification
+    deltas, so it is fed the encoding it was trained on. Every model DeepLC has
+    released so far is in that position: all five bundled checkpoints are bare
+    state dicts. A checkpoint that does record a specification is read literally,
+    and one written by this version always records the encoding it used.
+    """
+    spec = spec or {}
+    return {
+        "add_ccs_features": bool(spec.get("add_ccs_features", False)),
+        "add_terminal_composition": bool(spec.get("add_terminal_composition", False)),
+        "padding_length": int(spec.get("padding_length", 60)),
+        "legacy_positional_deltas": bool(spec.get("legacy_positional_deltas", not spec)),
+    }
+
+
+def _solve_reference_affine(
+    model: torch.nn.Module,
+    dataset,
+    device: str | None = None,
+    adapter: bool = False,
+) -> bool:
+    """
+    Put a freshly attached output on the right axis before training starts.
+
+    Both adaptation paths end in a layer that is linear in its input, so the values
+    that best fit the reference data follow in closed form. Solving them first is what
+    keeps a small reference set from producing a fit that predicts every peptide near
+    the mean retention time.
+
+    Returns True when the solve was applied. A failure is not fatal: training then
+    proceeds from the initialised values, which is the previous behaviour.
+    """
+    try:
+        loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+        features, targets = next(iter(loader))
+        selected = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(selected)
+        moved = tuple(f.to(selected) for f in features)
+        targets = targets.to(selected).float()
+        if adapter:
+            return bool(model.solve_adapter_output(*moved, targets))
+        model.solve_new_task_affine(moved, targets)
+        return True
+    except Exception:  # noqa: BLE001 - never let the anchor break the fit
+        LOGGER.warning("Could not anchor the output layer; training from the initialised values.")
+        return False
+
+
 def finetune(
     psm_list_reference: PSMList,
     psm_list_validation: PSMList | None = None,
@@ -299,7 +399,9 @@ def finetune(
         used.
     validation_split
         Fraction of ``psm_list_reference`` to use for validation when ``psm_list_validation``
-        is None.
+        is None. Raised to at least 0.25 when the reference set is smaller than
+        :data:`MIN_FINETUNE_REFERENCE`, because early stopping cannot work on a
+        handful of PSMs and an unchecked fit can end up far worse than calibration.
     model
         Trained model or path to model file.
     train_kwargs
@@ -312,12 +414,41 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
+
+    # Fine-tuning needs enough reference data to both fit and validate on. The
+    # default validation split leaves too few PSMs to early-stop against on a small
+    # reference set, which is how a fit ends up worse than the model it started
+    # from; the split is widened here so the stopping signal is usable.
+    n_reference = len(psm_list_reference)
+    if n_reference < MIN_FINETUNE_REFERENCE:
+        LOGGER.warning(
+            "Only %d reference PSMs. Fine-tuning measured worse than calibration "
+            "below about %d on held-out setups, in the worst case by sixty-fold. "
+            "Consider predict() with calibrate() instead.",
+            n_reference,
+            MIN_FINETUNE_REFERENCE,
+        )
+        validation_split = max(validation_split, 0.25)
+        LOGGER.info(
+            "Using a %.0f %% validation split so early stopping has signal.",
+            validation_split * 100,
+        )
+
     if any(psm_list_reference["is_decoy"]):
         # TODO: Move to reusable validation step?
         LOGGER.warning("PSM list contains decoy PSMs. These will be used for fine tuning.")
-    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
+    # The model is loaded further down, but the datasets have to match its feature
+    # specification, so peek at it first.
+    _peek = _model_ops.load_model(
+        model or DEFAULT_MODEL, device=(train_kwargs or {}).get("device")
+    )
+    _spec = getattr(_peek, "feature_spec", None) or {}
+    _feature_kwargs = _feature_kwargs_from_spec(_spec)
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference, **_feature_kwargs)
     validation_data = (
-        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+        DeepLCDataset.from_psm_list(psm_list_validation, **_feature_kwargs)
+        if psm_list_validation
+        else None
     )
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split
@@ -327,12 +458,56 @@ def finetune(
     freeze_epochs = int(train_kwargs_local.pop("freeze_epochs", 5))
     train_kwargs_local.setdefault("epochs", 50)
 
-    loaded_model = _model_ops.load_model(
-        model or DEFAULT_MODEL,
-        device=train_kwargs_local.get("device"),
-    )
-    loaded_model.add_adapter(hidden_size=adapter_hidden_size)
-    train_kwargs_local["freeze_epochs"] = freeze_epochs
+    loaded_model = _peek
+    if hasattr(loaded_model, "add_task_head"):
+        # A low-rank multitask head is adapted by fitting the new setup's own
+        # rank + 2 parameters with everything else frozen, rather than by training
+        # an adapter over the full head vector. There is nothing to unfreeze part
+        # way through, so freeze_epochs does not apply.
+        targets = psm_list_reference["retention_time"]
+        targets = torch.as_tensor(
+            np.asarray([t for t in targets if t is not None], dtype=np.float32)
+        )
+        n_trainable = loaded_model.add_task_head(targets=targets)
+
+        # Solve the affine part on the reference data before training. Left to the
+        # optimiser on a small reference set it collapses: on one 133-minute gradient
+        # with 230 reference peptides the output range shrank to 17 minutes and the
+        # error reached 91 minutes, with the correlation still above 0.9 because the
+        # ordering was never what broke.
+        if _solve_reference_affine(loaded_model, training_data, train_kwargs_local.get("device")):
+            LOGGER.info("Anchored the new setup's scale and shift by least squares.")
+        # Sixty-six parameters tolerate, and need, a far larger step than the
+        # whole-network default: at 1e-3 the fit is still short of its optimum after
+        # twenty-five epochs (1.32 min against 0.86 on a held-out setup).
+        train_kwargs_local.setdefault("learning_rate", 0.05)
+        LOGGER.info(
+            "Fitting %d parameters for the new setup at lr %.3g; encoder and "
+            "pretrained setups are frozen.",
+            n_trainable,
+            train_kwargs_local["learning_rate"],
+        )
+    elif hasattr(loaded_model, "add_adapter"):
+        loaded_model.add_adapter(hidden_size=adapter_hidden_size)
+        train_kwargs_local["freeze_epochs"] = freeze_epochs
+
+        # Put the adapter's output on the right axis before training. From a default
+        # initialisation on a small reference set the fit can collapse onto the mean
+        # retention time: on a 133-minute gradient with 230 reference peptides the
+        # output range shrank to 26 minutes and the error reached 92, with the
+        # correlation still above 0.9 because only the scale was lost.
+        if _solve_reference_affine(
+            loaded_model,
+            training_data,
+            train_kwargs_local.get("device"),
+            adapter=True,
+        ):
+            LOGGER.info("Anchored the adapter's output layer by least squares.")
+    else:
+        raise NotImplementedError(
+            f"{type(loaded_model).__name__} supports neither adapter-based "
+            "fine-tuning nor a low-rank task head."
+        )
 
     finetuned_model = _model_ops.train(
         model=loaded_model,
@@ -340,7 +515,66 @@ def finetune(
         validation_dataset=validation_dataset,
         **train_kwargs_local,
     )
+
+    _warn_if_fit_collapsed(
+        finetuned_model,
+        validation_dataset,
+        psm_list_reference,
+        device=train_kwargs_local.get("device"),
+    )
     return finetuned_model
+
+
+def _warn_if_fit_collapsed(
+    model: torch.nn.Module,
+    validation_dataset,
+    psm_list_reference: PSMList,
+    device: str | None = None,
+) -> None:
+    """
+    Say so, loudly, when a fine-tuned model is far worse than its own reference data.
+
+    Fine-tuning can converge on a degenerate solution that predicts every peptide
+    near the mean retention time. The loss curve looks unremarkable and the
+    correlation stays high, because the ordering is preserved and only the scale is
+    lost, so nothing in training flags it. Comparing the validation error against the
+    span of the reference retention times does: a collapsed fit lands at a large
+    fraction of the span where a working one sits near a hundredth of it.
+
+    This is a report, not a repair. Whether to fall back to calibration is the
+    caller's decision, and for the adapter path there is no untrained state worth
+    reverting to.
+    """
+    observed = [t for t in psm_list_reference["retention_time"] if t is not None]
+    if len(observed) < 3:
+        return
+    span = float(np.max(observed) - np.min(observed))
+    if span <= 0:
+        return
+
+    try:
+        error = _model_ops.evaluate(model, validation_dataset, device=device)
+    except Exception:  # noqa: BLE001 - the check must never break the fit
+        LOGGER.debug("Could not evaluate the fine-tuned model for the sanity check.")
+        return
+
+    fraction = error / span
+    if fraction > MAX_FINETUNE_ERROR_FRACTION:
+        LOGGER.error(
+            "Fine-tuned validation error is %.2f, which is %.0f %% of the reference "
+            "retention-time span of %.1f. A fit this far off has collapsed rather "
+            "than converged: predictions are probably clustered near the mean "
+            "retention time. Prefer predict() with calibrate() for this dataset.",
+            error,
+            fraction * 100,
+            span,
+        )
+    else:
+        LOGGER.info(
+            "Fine-tuned validation error %.3f, %.1f %% of the reference span.",
+            error,
+            fraction * 100,
+        )
 
 
 def train(
@@ -369,9 +603,13 @@ def train(
         Trained model.
 
     """
-    training_data = DeepLCDataset.from_psm_list(psm_list_reference)
+    # A model trained here is new, so it gets the corrected encoding rather than
+    # the compatibility default the dataset applies for existing checkpoints.
+    training_data = DeepLCDataset.from_psm_list(psm_list_reference, legacy_positional_deltas=False)
     validation_data = (
-        DeepLCDataset.from_psm_list(psm_list_validation) if psm_list_validation else None
+        DeepLCDataset.from_psm_list(psm_list_validation, legacy_positional_deltas=False)
+        if psm_list_validation
+        else None
     )
     training_dataset, validation_dataset = split_datasets(
         training_data, validation_data=validation_data, validation_split=validation_split
@@ -399,8 +637,17 @@ def save_model(model: torch.nn.Module, path: PathLike | str) -> None:
     path
         Destination file path.
 
+    Models that can describe themselves are saved with their architecture,
+    constructor arguments and feature specification alongside the weights, so
+    that :func:`load_model` can rebuild them. Saving a bare state dict for such a
+    model produced a file that could not be reloaded, because the loader would
+    fall back to inferring the architecture from tensor names.
+
     """
-    torch.save(model.state_dict(), path)
+    if hasattr(model, "describe"):
+        torch.save(model.describe(), path)
+    else:
+        torch.save(model.state_dict(), path)
 
 
 def _parse_psms(psm_list: PSMList | list[PSM | Peptidoform | str]) -> PSMList:
