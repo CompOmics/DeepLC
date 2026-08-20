@@ -466,3 +466,349 @@ class DeepLCModel(nn.Module):
         if adapter is not None:
             return adapter(out)  # [batch, 1]
         return out
+
+
+# ---------------------------------------------------------------------------
+# Fused-trunk multitask architecture
+# ---------------------------------------------------------------------------
+#
+# ``MultitaskDeepLCModel`` above runs four independent branches over four feature
+# arrays and concatenates the flattened results, which is what DeepLC has always
+# done. The architecture below instead fuses atomic composition with a learned
+# residue embedding into a single convolutional trunk and pools it to a fixed
+# vector. On the same training data and the same head it reaches roughly a third
+# of the error of the four-branch backbone, and it is length-agnostic because it
+# pools rather than flattens.
+
+
+class _ConvSiLU(nn.Module):
+    """A single ``Conv1d`` with ``same`` padding followed by SiLU."""
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int):
+        super().__init__()
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, padding="same")
+        self.act = nn.SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Convolve and activate ``(batch, channels, length)``."""
+        return self.act(self.conv(x))
+
+
+def _pointwise_stem(channels: int, layers: int, in_channels: int = 6) -> nn.Sequential:
+    """
+    Stack of width-1 convolutions decoding each position's atom counts alone.
+
+    Atomic composition determines the residue uniquely except for the Leu/Ile
+    pair, so this is the layer that can recover identity from the atom matrix
+    before any neighbour mixing happens. Recovering a residue from six counts is
+    a lookup rather than a linear map, so one layer is generally not enough.
+
+    Returned as a bare ``Sequential`` rather than wrapped in a module, so the
+    parameter names stay ``stem.0.conv.weight`` and match the trained checkpoint.
+    """
+    return nn.Sequential(
+        *[
+            _ConvSiLU(in_channels if i == 0 else channels, channels, kernel_size=1)
+            for i in range(layers)
+        ]
+    )
+
+
+class InputNorm(nn.Module):
+    """
+    Per-feature standardisation with buffers fitted on the training rows.
+
+    The dense feature vector mixes raw atom counts, sequence length and
+    positional compositions, whose scales differ by an order of magnitude.
+
+    A feature that never varies during training is left in raw units rather than
+    having its standard deviation clamped to a floor. Clamping would multiply any
+    non-zero test value by one over that floor: with phosphorus absent from
+    training, a single phosphate standardised to a value near a thousand and
+    destroyed the forward pass. Constant features must not become high-gain
+    inputs.
+    """
+
+    def __init__(self, n_features: int):
+        super().__init__()
+        self.register_buffer("mean", torch.zeros(n_features))
+        self.register_buffer("std", torch.ones(n_features))
+
+    @torch.no_grad()
+    def fit(self, values: torch.Tensor) -> None:
+        """Set the buffers from ``(n_rows, n_features)`` of training features."""
+        self.mean.copy_(values.mean(dim=0))
+        std = values.std(dim=0)
+        self.std.copy_(torch.where(std < 1e-3, torch.ones_like(std), std))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Standardise ``(batch, n_features)``."""
+        return (x - self.mean) / self.std
+
+
+class FactorHead(nn.Module):
+    """
+    Low-rank multitask head: a per-setup embedding dotted with a shared trunk.
+
+    ``pred[:, j] = (proj(trunk) . embedding[j]) * scale[j] + shift[j]``
+
+    Unlike :class:`BatchedHeads`, which gives every LC setup its own hidden
+    projection, the projection here is shared and only ``rank + 2`` parameters
+    belong to a setup. Adding a setup therefore means fitting 66 values at
+    rank 64, with the encoder frozen, rather than retraining a head.
+
+    ``scale`` and ``shift`` are an affine map on that setup's output. Training
+    normalises each setup's retention times to a fixed range, so a raw training
+    checkpoint predicts in that normalised space; because both transforms are
+    affine they compose, and packaging folds the normalisation into ``scale`` and
+    ``shift`` so that a shipped model returns minutes directly. Whether that has
+    happened is recorded as ``target_units`` in the checkpoint rather than
+    assumed.
+
+    Parameters
+    ----------
+    trunk_dim
+        Width of the shared trunk output.
+    n_tasks
+        Number of LC setups the model was trained on.
+    rank
+        Size of the per-setup embedding.
+
+    """
+
+    def __init__(self, trunk_dim: int, n_tasks: int, rank: int = 64):
+        super().__init__()
+        self.n_tasks = n_tasks
+        self.rank = rank
+        self.proj = nn.Linear(trunk_dim, rank)
+        self.embedding = nn.Parameter(torch.zeros(n_tasks, rank))
+        self.scale = nn.Parameter(torch.ones(n_tasks))
+        self.shift = nn.Parameter(torch.zeros(n_tasks))
+
+    def forward(self, trunk: torch.Tensor, task_idx: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Map trunk output to one prediction per task.
+
+        Parameters
+        ----------
+        trunk
+            Shape ``(batch, trunk_dim)``.
+        task_idx
+            Optional task indices to evaluate. Without it every task is
+            returned, which for a model trained on thousands of setups is a wide
+            matrix; pass the subset when only a few setups are of interest.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, n_tasks)``, or ``(batch, len(task_idx))``.
+
+        """
+        projected = self.proj(trunk)
+        if task_idx is None:
+            return projected @ self.embedding.t() * self.scale + self.shift
+        return (projected @ self.embedding[task_idx].t()) * self.scale[task_idx] + self.shift[
+            task_idx
+        ]
+
+
+class FlexCNNMultitaskModel(nn.Module):
+    """
+    Multitask RT model fusing atom composition and residue identity in one trunk.
+
+    Atom counts pass through a pointwise stem, are concatenated with a learned
+    residue embedding, and the result runs through a convolutional stack that is
+    masked and pooled over the valid length. The pooled vector is concatenated
+    with the global feature vector and the residue counts, and a small MLP feeds
+    :class:`FactorHead`.
+
+    The forward signature matches :class:`MultitaskDeepLCModel` so the two are
+    interchangeable in the prediction path, but ``x_atom_sum`` is unused: the
+    convolutional trunk sees the per-position matrix directly, which makes the
+    rolling-sum array redundant.
+
+    The global feature vector must be the 67-dimensional form produced with
+    ``add_terminal_composition=True``; the 55-dimensional default will fail on
+    shape at the first dense layer.
+
+    Parameters
+    ----------
+    n_tasks
+        Number of LC setups.
+    global_dim
+        Length of the global feature vector.
+    embed_dim
+        Width of the residue embedding.
+    channels
+        Output channels of each convolution stage.
+    kernel_size
+        Convolution width.
+    stem_channels
+        Width of the pointwise stem, or 0 to feed raw atom counts.
+    stem_layers
+        Number of pointwise stem layers.
+    width
+        Width of the dense trunk.
+    depth
+        Number of dense layers.
+    rank
+        Per-setup embedding size in the head.
+
+    """
+
+    #: Index reserved for padding positions in the residue encoding.
+    PAD_INDEX = 20
+
+    def __init__(
+        self,
+        n_tasks: int,
+        global_dim: int = 67,
+        embed_dim: int = 16,
+        channels: tuple[int, ...] = (512, 512),
+        kernel_size: int = 5,
+        stem_channels: int = 128,
+        stem_layers: int = 2,
+        width: int = 256,
+        depth: int = 3,
+        rank: int = 64,
+    ):
+        super().__init__()
+        self.encoder = _FlexCNNEncoder(
+            global_dim=global_dim,
+            embed_dim=embed_dim,
+            channels=channels,
+            kernel_size=kernel_size,
+            stem_channels=stem_channels,
+            stem_layers=stem_layers,
+            width=width,
+            depth=depth,
+        )
+        self.head = FactorHead(trunk_dim=width, n_tasks=n_tasks, rank=rank)
+
+    def forward(
+        self,
+        x_atom: torch.Tensor,
+        x_atom_sum: torch.Tensor,
+        x_global: torch.Tensor,
+        x_one_hot: torch.Tensor,
+        task_idx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Predict retention time for every LC setup.
+
+        Parameters
+        ----------
+        x_atom
+            Shape ``(batch, length, 6)``, per-position atomic composition.
+        x_atom_sum
+            Unused; accepted so the signature matches the four-branch model.
+        x_global
+            Shape ``(batch, 67)``, global feature vector with terminal
+            composition.
+        x_one_hot
+            Shape ``(batch, length, 20)``, one-hot residue encoding.
+        task_idx
+            Optional subset of task indices to evaluate.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, n_tasks)``, or ``(batch, len(task_idx))``.
+
+        """
+        del x_atom_sum  # the fused trunk reads x_atom directly
+        return self.head(self.encoder(x_atom, x_global, x_one_hot), task_idx)
+
+
+class _FlexCNNEncoder(nn.Module):
+    """Convolutional trunk shared by every LC setup in :class:`FlexCNNMultitaskModel`."""
+
+    PAD_INDEX = 20
+
+    def __init__(
+        self,
+        global_dim: int,
+        embed_dim: int,
+        channels: tuple[int, ...],
+        kernel_size: int,
+        stem_channels: int,
+        stem_layers: int,
+        width: int,
+        depth: int,
+    ):
+        super().__init__()
+        self.embed = nn.Embedding(self.PAD_INDEX + 1, embed_dim, padding_idx=self.PAD_INDEX)
+        self.stem = _pointwise_stem(stem_channels, stem_layers) if stem_channels > 0 else None
+
+        in_channels = (stem_channels if stem_channels > 0 else 6) + embed_dim
+        blocks = []
+        for out_channels in channels:
+            blocks.append(_ConvSiLU(in_channels, out_channels, kernel_size))
+            in_channels = out_channels
+        self.blocks = nn.ModuleList(blocks)
+
+        # Sum and max pooling, masked to the valid length. Sum is extensive in
+        # peptide length and max is not, so the pair carries both.
+        pooled_dim = in_channels * 2
+        self.pool_norm = nn.LayerNorm(pooled_dim)
+
+        dense_dim = global_dim + self.PAD_INDEX
+        self.norm = InputNorm(dense_dim)
+        layers: list[nn.Module] = []
+        sizes = [dense_dim + pooled_dim] + [width] * depth
+        for i in range(len(sizes) - 1):
+            layers.append(nn.Linear(sizes[i], sizes[i + 1]))
+            layers.append(nn.SiLU())
+        self.net = nn.Sequential(*layers)
+        self.trunk_dim = width
+
+    def residue_indices(self, x_one_hot: torch.Tensor) -> torch.Tensor:
+        """
+        Convert a one-hot residue matrix to integer indices.
+
+        Padding positions are all-zero rows, for which ``argmax`` returns 0 and
+        would collide with the first residue, so they are set to
+        :attr:`PAD_INDEX` explicitly.
+        """
+        idx = x_one_hot.argmax(dim=2)
+        return idx.masked_fill(x_one_hot.sum(dim=2) == 0, self.PAD_INDEX)
+
+    def residue_counts(self, idx: torch.Tensor) -> torch.Tensor:
+        """
+        Residue counts per peptidoform, shape ``(batch, 20)``.
+
+        Built with ``scatter_add`` rather than by materialising a
+        ``(batch, length, 21)`` one-hot tensor, which dominated inference time
+        for every model that uses counts.
+        """
+        idx = idx.long().clamp(0, self.PAD_INDEX)
+        counts = torch.zeros(
+            idx.shape[0], self.PAD_INDEX + 1, device=idx.device, dtype=torch.float32
+        )
+        counts.scatter_add_(1, idx, torch.ones_like(idx, dtype=torch.float32))
+        return counts[:, : self.PAD_INDEX]  # drop the padding column
+
+    def forward(
+        self, x_atom: torch.Tensor, x_global: torch.Tensor, x_one_hot: torch.Tensor
+    ) -> torch.Tensor:
+        """Encode a batch to ``(batch, trunk_dim)``."""
+        idx = self.residue_indices(x_one_hot)
+        valid = (idx != self.PAD_INDEX).unsqueeze(1)  # (batch, 1, length)
+
+        atom = x_atom.float().transpose(1, 2)
+        if self.stem is not None:
+            atom = self.stem(atom)
+        hidden = torch.cat([atom, self.embed(idx).transpose(1, 2)], dim=1)
+
+        for block in self.blocks:
+            hidden = block(hidden)
+        hidden = hidden * valid
+
+        summed = hidden.sum(dim=2)
+        maxed = torch.nan_to_num(
+            hidden.masked_fill(~valid, float("-inf")).max(dim=2).values, neginf=0.0
+        )
+        pooled = self.pool_norm(torch.cat([summed, maxed], dim=1))
+
+        dense = torch.cat([x_global.float(), self.residue_counts(idx)], dim=1)
+        return self.net(torch.cat([self.norm(dense), pooled], dim=1))

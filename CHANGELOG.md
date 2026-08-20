@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Fused-trunk multitask architecture (`FlexCNNMultitaskModel`), which merges atomic
+  composition with a learned residue embedding in a single convolutional trunk and pools
+  over the valid length instead of flattening four separate branches. Available as
+  `deeplc.core.FLEXCNN_MULTITASK_MODEL`; the bundled model was trained across 6,543 LC
+  setups and reaches 0.82 min test MAE and 0.24 min median against 1.26 min and 0.51 min
+  for the four-branch backbone on the same data and the same head.
+- `FactorHead`, a low-rank multitask head where a setup owns only `rank + 2` parameters,
+  so adding an LC setup means fitting 66 values with the encoder frozen rather than
+  training a head.
+- Self-describing checkpoints. A model file may now record its architecture, constructor
+  arguments, feature specification and target units, so loading no longer infers the
+  architecture from tensor shapes. Bare state dicts continue to load unchanged.
+- `add_terminal_composition` on `DeepLCDataset` and `DeepLCDataset.from_psm_list`,
+  passed through to `encode_peptidoform`.
+
+### Changed
+
+- `predict()` loads the model before encoding features, so a model that records a feature
+  specification gets the features it was trained on. Previously the dataset was always
+  built with defaults.
+
 ## [4.0.0] - 2026-07-24
 
 ### Changed

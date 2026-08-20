@@ -23,6 +23,13 @@ LOGGER = logging.getLogger(__name__)
 DEEPLC_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
 
+#: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
+#: switching would change every prediction, so the choice is left to the caller
+#: until the calibration path is adapted to its low-rank head.
+FLEXCNN_MULTITASK_MODEL = (
+    DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
+)
+
 
 def predict(
     psm_list: PSMList | list[PSM | Peptidoform | str],
@@ -53,9 +60,22 @@ def predict(
         produces multitask output, in which case shape is ``(n, n_heads)``.
 
     """
+    # The model is loaded before the dataset is built because the features it
+    # needs depend on the model. A checkpoint that describes itself carries a
+    # feature specification, and a model trained on the 67-dimensional global
+    # vector cannot be fed the 55-dimensional default.
+    loaded_model = _model_ops.load_model(model or DEFAULT_MODEL)
+    feature_spec = getattr(loaded_model, "feature_spec", None) or {}
+
     result = _model_ops.predict(
-        model=model or DEFAULT_MODEL,
-        data=DeepLCDataset.from_psm_list(_parse_psms(psm_list)),
+        model=loaded_model,
+        data=DeepLCDataset.from_psm_list(
+            _parse_psms(psm_list),
+            add_ccs_features=bool(feature_spec.get("add_ccs_features", False)),
+            add_terminal_composition=bool(
+                feature_spec.get("add_terminal_composition", False)
+            ),
+        ),
         **(predict_kwargs or {}),
     ).numpy()
     if not return_matrix:

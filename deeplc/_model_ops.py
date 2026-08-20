@@ -17,7 +17,7 @@ from rich.progress import (
 )
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from deeplc._architecture import DeepLCModel
+from deeplc._architecture import DeepLCModel, FlexCNNMultitaskModel
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,17 @@ def load_model(
     )
 
     if isinstance(model, (str, PathLike, Path)):
+        raw = torch.load(model, weights_only=True, map_location=selected_device)
+
+        # Newer checkpoints are a dict describing the model rather than a bare
+        # state dict, so the architecture and its hyperparameters do not have to
+        # be guessed from tensor shapes. Older files keep working unchanged.
+        if isinstance(raw, dict) and "architecture" in raw:
+            return _load_described_model(raw, selected_device)
+
         # Infer architecture hyperparameters from the saved state dict
         # Only checks n_heads and final_num_layers; other hyperparameters are set to defaults
         # May break for models saved with different architectures.
-        raw = torch.load(model, weights_only=True, map_location=selected_device)
         n_heads = raw["heads.b2"].shape[0]
         final_num_layers = sum(
             1 for k in raw if k.startswith("shared_trunk.") and k.endswith(".weight")
@@ -46,7 +53,7 @@ def load_model(
         if "adapter.0.weight" in raw:
             loaded_model.add_adapter(hidden_size=raw["adapter.0.weight"].shape[0])
         loaded_model.load_state_dict(raw)
-    elif isinstance(model, DeepLCModel):
+    elif isinstance(model, (DeepLCModel, FlexCNNMultitaskModel)):
         loaded_model = model
         logger.debug("Using provided PyTorch model instance")
     elif model is None:
@@ -58,6 +65,55 @@ def load_model(
     loaded_model.to(selected_device)
 
     return loaded_model
+
+
+#: Architectures a described checkpoint may name, and the class to build.
+_DESCRIBED_ARCHITECTURES = {
+    "FlexCNNMultitaskModel": FlexCNNMultitaskModel,
+}
+
+
+def _load_described_model(blob: dict, device: torch.device | str) -> torch.nn.Module:
+    """
+    Build a model from a checkpoint that describes itself.
+
+    The checkpoint carries the architecture name, its constructor arguments and
+    the feature specification it was trained against. That last part matters:
+    the model's first dense layer fixes the width of the global feature vector,
+    so a model expecting terminal composition cannot be fed the shorter default
+    vector. Attaching the specification to the returned module lets the caller
+    build a matching dataset instead of inferring it.
+    """
+    name = blob["architecture"]
+    try:
+        cls = _DESCRIBED_ARCHITECTURES[name]
+    except KeyError:
+        raise ValueError(
+            f"Checkpoint names architecture {name!r}, which this version of DeepLC "
+            f"does not know. Known architectures: "
+            f"{sorted(_DESCRIBED_ARCHITECTURES)}."
+        ) from None
+
+    kwargs = dict(blob.get("encoder_kwargs") or {})
+    kwargs.update(blob.get("head_kwargs") or {})
+    built = cls(n_tasks=blob["n_tasks"], **kwargs)
+    built.load_state_dict(blob["state_dict"])
+
+    # Carried on the instance so predict() can build a matching dataset.
+    built.feature_spec = blob.get("feature_spec")
+    built.target_units = blob.get("target_units")
+    built.task_names = blob.get("task_names")
+
+    logger.debug(
+        "Loaded %s with %d tasks, feature spec %s, targets in %s",
+        name,
+        blob["n_tasks"],
+        (built.feature_spec or {}).get("name", "unspecified"),
+        built.target_units or "unspecified units",
+    )
+    built.to(device)
+    built.eval()
+    return built
 
 
 def train(
