@@ -22,7 +22,20 @@ from deeplc.data import DeepLCDataset, split_datasets
 LOGGER = logging.getLogger(__name__)
 
 DEEPLC_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
+#: The model every core function uses when none is given: the fused-trunk multitask
+#: model trained across 6,543 LC setups (see :data:`FLEXCNN_MULTITASK_MODEL`).
+DEFAULT_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
+
+#: The 4.0 default, a shared-trunk model with one head per LC setup, kept so that
+#: existing workflows can pin it: ``predict(psms, model=LEGACY_MULTITASK_MODEL)``.
+LEGACY_MULTITASK_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_model.pt"
+
+#: The LC setup an uncalibrated ``predict()`` reports for a multitask model. The
+#: default model has 6,543 setups and no reference to choose between them, so the
+#: setup of the DeepLC 1.x to 3.x training data (PXD005573, 200-minute gradient) is
+#: used, which keeps uncalibrated output on the gradient earlier versions reported.
+#: Calibration and fine-tuning pick or fit the setup from the reference instead.
+DEFAULT_TASK_NAME = "PXD005573_mcp"
 
 #: Below this many reference PSMs, fine-tuning measured worse than calibration on
 #: every held-out setup tried, so it is warned about rather than silently attempted.
@@ -40,10 +53,9 @@ MIN_FINETUNE_REFERENCE = 500
 #: near 1 %.
 MAX_FINETUNE_ERROR_FRACTION = 0.15
 
-#: Fused-trunk multitask model, trained across 6,543 LC setups. Not the default:
-#: switching would change every prediction, so the choice is left to the caller
-#: until the calibration path is adapted to its low-rank head.
-FLEXCNN_MULTITASK_MODEL = DEEPLC_DIR / "package_data" / "models" / "multitask_flexcnn_model.pt"
+#: Fused-trunk multitask model, trained across 6,543 LC setups. The default since
+#: 4.1.1; the name is kept for callers that pass it explicitly.
+FLEXCNN_MULTITASK_MODEL = DEFAULT_MODEL
 
 
 def predict(
@@ -65,8 +77,10 @@ def predict(
         Additional keyword arguments to pass to the prediction function.
     return_matrix
         If True, return the full prediction matrix of shape ``(n, n_heads)`` when using a
-        multitask model. If False (default), return a 1D array of shape ``(n,)`` using
-        head 0 when model output is 2D.
+        multitask model. If False (default), return a 1D array of shape ``(n,)`` for the
+        setup named by :data:`DEFAULT_TASK_NAME` when the model knows its setups, and head
+        0 otherwise. Uncalibrated output is on that setup's gradient; use
+        :func:`predict_and_calibrate` to map it onto your own.
 
     Returns
     -------
@@ -96,7 +110,7 @@ def predict(
         and "task_idx" not in kwargs
         and _model_ops.supports_task_subset(loaded_model)
     ):
-        kwargs["task_idx"] = [0]
+        kwargs["task_idx"] = [_default_task_idx(loaded_model)]
 
     result = _model_ops.predict(
         model=loaded_model,
@@ -106,8 +120,22 @@ def predict(
         **kwargs,
     ).numpy()
     if not return_matrix:
-        return result[:, 0]
+        return result[:, 0 if "task_idx" in kwargs else _default_task_idx(loaded_model)]
     return result
+
+
+def _default_task_idx(model: torch.nn.Module) -> int:
+    """
+    Index of the setup an uncalibrated prediction reports.
+
+    :data:`DEFAULT_TASK_NAME` when the model carries setup names and lists it, else 0.
+    A model without names, or a model of a single setup, has nothing to choose from.
+    """
+    names = getattr(model, "task_names", None) or []
+    try:
+        return list(names).index(DEFAULT_TASK_NAME)
+    except ValueError:
+        return 0
 
 
 def calibrate(

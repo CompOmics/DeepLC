@@ -9,7 +9,7 @@ from deeplc import _model_ops
 from torch.utils.data import Dataset
 
 from deeplc._architecture import DeepLCModel
-from deeplc.core import DEFAULT_MODEL
+from deeplc.core import LEGACY_MULTITASK_MODEL
 from deeplc.data import split_datasets
 
 
@@ -59,7 +59,7 @@ def test_train_rejects_empty_validation_loader():
 
 
 @pytest.mark.skipif(
-    not DEFAULT_MODEL.exists(),
+    not LEGACY_MULTITASK_MODEL.exists(),
     reason="multitask model not bundled",
 )
 def test_load_multitask_model_without_prior_shim():
@@ -67,7 +67,7 @@ def test_load_multitask_model_without_prior_shim():
     # Remove any previously registered shim so the test is self-contained.
     sys.modules.pop("multitask_model", None)
 
-    model = _model_ops.load_model(DEFAULT_MODEL, device="cpu")
+    model = _model_ops.load_model(LEGACY_MULTITASK_MODEL, device="cpu")
 
     assert isinstance(model, DeepLCModel)
 

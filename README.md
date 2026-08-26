@@ -16,8 +16,8 @@
 
 DeepLC predicts retention times for peptides carrying any modification. It does this by leveraging 
 a deep learning model based on atomic composition features. Starting with v4, DeepLC comes with a
-multitask pretrained model covering multiple LC setups, enabling accurate predictions out of the
-box. For best results on a specific dataset, predictions can be calibrated or fine-tuned
+multitask pretrained model covering multiple LC setups (6,543 setups since v4.1.1), enabling
+accurate predictions out of the box. For best results on a specific dataset, predictions can be calibrated or fine-tuned
 using a small reference set of identified PSMs.
 
 ## Citation

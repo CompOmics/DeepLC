@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-08-26
+
+### Changed
+
+- The default model is now the fused-trunk multitask model trained across 6,543 LC
+  setups (`multitask_flexcnn_model.pt`, bundled since 4.1.0 as an opt-in). Every core
+  function and the command line use it when no `model` is given. The 4.0 default,
+  `multitask_model.pt`, stays bundled as `deeplc.core.LEGACY_MULTITASK_MODEL`; pass it
+  as `model=` to reproduce 4.0 and 4.1.0 predictions exactly.
+- Uncalibrated `predict()` on a multitask model that carries setup names reports the
+  setup named by `deeplc.core.DEFAULT_TASK_NAME` (`PXD005573_mcp`, the 200-minute
+  gradient the DeepLC 1.x to 3.x models were trained on) instead of head 0, which for
+  the new default was an arbitrary setup. `return_matrix=True` is unchanged, and so are
+  calibration and fine-tuning, which select or fit the setup from the reference.
+
 ## [4.1.0] - 2026-08-20
 
 ### Added
