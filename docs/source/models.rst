@@ -5,11 +5,22 @@ Prediction models
 Default model
 =============
 
-DeepLC 4.0 ships a pretrained multitask model (``multitask_model.pt``) as the
-default. This model was trained jointly across multiple LC setups and outputs
-one retention time prediction per setup. The best-fitting output head is
-selected automatically during calibration based on Pearson correlation to the
-observed retention times in the reference set.
+DeepLC ships a pretrained multitask model as the default. Since 4.1.1 this is
+``multitask_flexcnn_model.pt``: a fused-trunk convolutional model with a low-rank
+multitask head, trained jointly across 6,543 LC setups from public repositories.
+It outputs one retention time prediction (in minutes) per setup. The best-fitting
+setup is selected automatically during calibration based on Pearson correlation to
+the observed retention times in the reference set, and fine-tuning fits a new setup
+head (66 parameters) on the reference with the trunk frozen.
+
+Without calibration, :func:`deeplc.predict` reports the setup named by
+:data:`deeplc.core.DEFAULT_TASK_NAME` (``PXD005573_mcp``, the 200-minute gradient
+that DeepLC 1.x to 3.x models were trained on), or the full matrix with
+``return_matrix=True``. The setup names are available as ``model.task_names``.
+
+The 4.0 default, ``multitask_model.pt`` (shared trunk, one head per setup), stays
+bundled as :data:`deeplc.core.LEGACY_MULTITASK_MODEL` and can be passed as
+``model=`` to any core function to reproduce 4.0 and 4.1.0 predictions.
 
 Training a model from scratch
 ==============================

@@ -71,6 +71,45 @@ def test_predict_returns_matrix_when_flag_set():
     assert result.shape[1] > 1
 
 
+def test_default_model_is_the_flexcnn_multitask_model():
+    """Since 4.1.1 the fused-trunk model of 6,543 setups is what a bare call loads."""
+    assert deeplc.core.DEFAULT_MODEL == deeplc.core.FLEXCNN_MULTITASK_MODEL
+    assert deeplc.core.DEFAULT_MODEL.name == "multitask_flexcnn_model.pt"
+    assert deeplc.core.LEGACY_MULTITASK_MODEL.name == "multitask_model.pt"
+    assert deeplc.core.LEGACY_MULTITASK_MODEL.exists()
+
+
+def test_uncalibrated_predict_reports_the_default_setup():
+    """
+    A bare ``predict`` returns the column of :data:`DEFAULT_TASK_NAME`, not head 0.
+
+    The default model lists thousands of setups, and head 0 is whichever sorted first.
+    The PXD005573 setup keeps uncalibrated output on the gradient DeepLC 1.x to 3.x
+    reported, so downstream code that never calibrated sees comparable numbers.
+    """
+    model = deeplc.core._model_ops.load_model(deeplc.core.DEFAULT_MODEL, device="cpu")
+    idx = list(model.task_names).index(deeplc.core.DEFAULT_TASK_NAME)
+    assert idx != 0
+
+    psm_list = _make_psm_list(_PEPTIDES)
+    single = deeplc.core.predict(psm_list, predict_kwargs={"device": "cpu"})
+    matrix = deeplc.core.predict(psm_list, return_matrix=True, predict_kwargs={"device": "cpu"})
+    np.testing.assert_allclose(single, matrix[:, idx], rtol=1e-5, atol=1e-4)
+    assert not np.allclose(single, matrix[:, 0])
+    assert np.isfinite(single).all()
+
+
+def test_legacy_multitask_model_still_loads_and_predicts():
+    """The 4.0 default remains bundled and usable when pinned explicitly."""
+    result = deeplc.core.predict(
+        _make_psm_list(_PEPTIDES),
+        model=deeplc.core.LEGACY_MULTITASK_MODEL,
+        predict_kwargs={"device": "cpu"},
+    )
+    assert result.shape == (len(_PEPTIDES),)
+    assert np.isfinite(result).all()
+
+
 def test_predict_and_calibrate_auto_selects_reference():
     # 200 PSMs cycling through _PEPTIDES; 100 with qvalue<=0.01, 100 with qvalue=1.0.
     # auto-selection picks the 100 low-qvalue PSMs as reference.

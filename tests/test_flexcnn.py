@@ -549,8 +549,10 @@ def test_bundled_model_predicts_in_minutes():
     assert -100.0 < out.min() < 60.0
     assert 20.0 < out.max() < 1000.0
 
+    # Uncalibrated output reports the DeepLC 1.x to 3.x setup, not whichever sorted first.
+    default_idx = list(model.task_names).index(core.DEFAULT_TASK_NAME)
     single = core.predict(peptides, model=path)
-    np.testing.assert_allclose(single, out[:, 0], rtol=1e-5)
+    np.testing.assert_allclose(single, out[:, default_idx], rtol=1e-5)
 
 
 def test_small_reference_set_warns_and_widens_validation(tmp_path, caplog):

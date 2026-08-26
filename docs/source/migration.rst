@@ -60,9 +60,10 @@ Model checkpoints
 =================
 
 Legacy ``.hdf5`` checkpoints from v3 are not compatible with v4. The bundled model
-has been retrained as a PyTorch multitask model (``multitask_model.pt``). Custom
-``.hdf5`` checkpoints cannot be loaded; retrain using the v4 API. The new model
-and should serve as an ideal starting point for fine-tuning to any custom setup.
+has been retrained as a PyTorch multitask model (``multitask_flexcnn_model.pt``
+since 4.1.1, covering 6,543 LC setups; ``multitask_model.pt`` in 4.0 and 4.1.0).
+Custom ``.hdf5`` checkpoints cannot be loaded; retrain using the v4 API. The new
+model should serve as an ideal starting point for fine-tuning to any custom setup.
 
 
 Backend: TensorFlow → PyTorch
