@@ -12,7 +12,7 @@ from psm_utils import PSM, Peptidoform, PSMList
 from torch.utils.data import DataLoader
 
 from deeplc import _model_ops
-from deeplc._reference_selection import select_reference_psms
+from deeplc._reference_selection import deduplicate_psms, select_reference_psms
 from deeplc.calibration import (
     Calibration,
     SplineTransformerCalibration,
@@ -143,6 +143,7 @@ def calibrate(
     model: torch.nn.Module | PathLike | str | None = None,
     calibration: Calibration | None = None,
     predict_kwargs: dict | None = None,
+    deduplicate_reference: bool = True,
 ) -> Calibration:
     """
     Return a `Calibration` instance fitted to the reference dataset.
@@ -157,6 +158,12 @@ def calibrate(
         Calibration instance to use. If None, SplineTransformerCalibration is used.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
+    deduplicate_reference
+        Keep only the first PSM of every peptidoform in the reference (default). A reference
+        built from a search result repeats a peptidoform once per spectrum it was identified
+        in, each time with a different observed retention time; those repeats give the fit
+        conflicting targets and weigh peptidoforms by how often they happened to be
+        identified. Set to False to fit on every reference PSM as given.
 
     Returns
     -------
@@ -164,6 +171,9 @@ def calibrate(
         Fitted calibration instance.
 
     """
+    if deduplicate_reference:
+        psm_list_reference = deduplicate_psms(psm_list_reference)
+
     # Get calibration
     if calibration is None:
         LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
@@ -212,6 +222,7 @@ def predict_and_calibrate(
     model: torch.nn.Module | PathLike | str | None = None,
     calibration: Calibration | None = None,
     predict_kwargs: dict | None = None,
+    deduplicate_reference: bool = True,
 ) -> np.ndarray:
     """
     Predict retention times and calibrate to a reference.
@@ -231,6 +242,13 @@ def predict_and_calibrate(
         Calibration instance to use. If None, SplineTransformerCalibration is used.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
+
+    deduplicate_reference
+        Keep only the first PSM of every peptidoform in the reference (default). A reference
+        built from a search result repeats a peptidoform once per spectrum it was identified
+        in, each time with a different observed retention time; those repeats give the fit
+        conflicting targets and weigh peptidoforms by how often they happened to be
+        identified. Set to False to use every reference PSM as given.
 
     Returns
     -------
@@ -266,6 +284,7 @@ def predict_and_calibrate(
             model=model,
             calibration=calibration,
             predict_kwargs=predict_kwargs,
+            deduplicate_reference=deduplicate_reference,
         )
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
@@ -293,6 +312,7 @@ def finetune_and_predict(
     model: torch.nn.Module | PathLike | str | None = None,
     train_kwargs: dict | None = None,
     predict_kwargs: dict | None = None,
+    deduplicate_reference: bool = True,
 ) -> np.ndarray:
     """
     Fine-tune the model to a reference and predict new retention times.
@@ -313,6 +333,13 @@ def finetune_and_predict(
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
 
+    deduplicate_reference
+        Keep only the first PSM of every peptidoform in the reference (default). A reference
+        built from a search result repeats a peptidoform once per spectrum it was identified
+        in, each time with a different observed retention time; those repeats give the fit
+        conflicting targets and weigh peptidoforms by how often they happened to be
+        identified. Set to False to use every reference PSM as given.
+
     Returns
     -------
     np.ndarray
@@ -331,6 +358,7 @@ def finetune_and_predict(
         psm_list_reference=parsed_psm_list_ref,
         model=model,
         train_kwargs=train_kwargs,
+        deduplicate_reference=deduplicate_reference,
     )
 
     # Predict retention times with fine-tuned model
@@ -347,6 +375,7 @@ def finetune_and_predict(
         psm_list_reference=parsed_psm_list_ref,
         model=finetuned_model,
         predict_kwargs=predict_kwargs,
+        deduplicate_reference=deduplicate_reference,
     )
 
     # Apply calibration to predictions
@@ -414,6 +443,7 @@ def finetune(
     validation_split: float = 0.1,
     model: torch.nn.Module | PathLike | str | None = None,
     train_kwargs: dict | None = None,
+    deduplicate_reference: bool = True,
 ) -> torch.nn.Module:
     """
     Fine-tune an existing model.
@@ -434,6 +464,12 @@ def finetune(
         Trained model or path to model file.
     train_kwargs
         Additional keyword arguments to pass to the training function.
+    deduplicate_reference
+        Keep only the first PSM of every peptidoform in the reference (default). A reference
+        built from a search result repeats a peptidoform once per spectrum it was identified
+        in, each time with a different observed retention time; those repeats give the fit
+        conflicting targets and weigh peptidoforms by how often they happened to be
+        identified. Set to False to fit on every reference PSM as given.
 
     Returns
     -------
@@ -442,6 +478,9 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
+
+    if deduplicate_reference:
+        psm_list_reference = deduplicate_psms(psm_list_reference)
 
     # Fine-tuning needs enough reference data to both fit and validate on. The
     # default validation split leaves too few PSMs to early-stop against on a small

@@ -56,6 +56,17 @@ For calibration, pass a reference file with observed retention times using the
 ``--psm-file-reference`` option. If no reference file is provided, DeepLC
 attempts automatic calibration from high-confidence PSMs in the input file.
 
+The reference is deduplicated before it is used: only the first PSM of each
+peptidoform is kept, charge states included. A search result usually contains
+the same peptidoform from many spectra with a different observed retention time
+each time, and those repeats give the calibration conflicting targets while
+weighing peptidoforms by how often they were identified. Pass
+``--keep-duplicate-reference-psms`` (command line) or
+``deduplicate_reference=False`` (Python API) to fit on every reference PSM
+instead. When the repeats of a peptidoform disagree by a large fraction of the
+observed retention-time range, DeepLC reports it: the reference then mixes runs
+or contains low-confidence PSMs, and deduplication only hides that.
+
 For a full list of options:
 
 .. code-block:: sh
