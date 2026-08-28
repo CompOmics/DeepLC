@@ -12,7 +12,7 @@ from psm_utils import PSM, Peptidoform, PSMList
 from torch.utils.data import DataLoader
 
 from deeplc import _model_ops
-from deeplc._reference_selection import select_reference_psms
+from deeplc._reference_selection import deduplicate_psms, select_reference_psms
 from deeplc.calibration import (
     Calibration,
     SplineTransformerCalibration,
@@ -164,6 +164,13 @@ def calibrate(
         Fitted calibration instance.
 
     """
+    # One point per peptidoform: a reference taken from a search result repeats a
+    # peptidoform once per spectrum it was identified in, each time with a different observed
+    # retention time, which gives the fit conflicting targets and weighs peptidoforms by how
+    # often they happened to be identified. A caller who wants the repeats to count fits a
+    # Calibration itself and passes it in already fitted.
+    psm_list_reference = deduplicate_psms(psm_list_reference)
+
     # Get calibration
     if calibration is None:
         LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
@@ -231,6 +238,7 @@ def predict_and_calibrate(
         Calibration instance to use. If None, SplineTransformerCalibration is used.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
+
 
     Returns
     -------
@@ -312,6 +320,7 @@ def finetune_and_predict(
         Additional keyword arguments to pass to the training function.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
+
 
     Returns
     -------
@@ -442,6 +451,11 @@ def finetune(
 
     """
     LOGGER.info("Fine-tuning model...")
+
+    # One point per peptidoform, as in calibrate(): training on the same peptidoform several
+    # times with contradictory retention times teaches the model the average of a
+    # disagreement. Use deeplc.train() for full control over the training set.
+    psm_list_reference = deduplicate_psms(psm_list_reference)
 
     # Fine-tuning needs enough reference data to both fit and validate on. The
     # default validation split leaves too few PSMs to early-stop against on a small

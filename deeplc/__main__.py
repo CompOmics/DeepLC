@@ -135,7 +135,14 @@ def _validate_finetune(ctx, param, value):
     help="Path to a model file. Uses the built-in default model if not provided.",
 )
 def predict(
-    psms, psm_filetype, reference, reference_filetype, auto_calibrate, finetune, output, model
+    psms,
+    psm_filetype,
+    reference,
+    reference_filetype,
+    auto_calibrate,
+    finetune,
+    output,
+    model,
 ):
     """Predict retention times for a list of peptide-spectrum matches."""
     if auto_calibrate and reference:

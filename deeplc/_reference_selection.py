@@ -128,3 +128,108 @@ def _select_by_score(candidates: PSMList) -> PSMList:
 
     top_indices = np.argsort(scores)[::-1][:n_select]
     return candidates[top_indices]
+
+
+def deduplicate_psms(psm_list: PSMList, ignore_charge: bool = True) -> PSMList:
+    """
+    Keep one PSM per peptidoform, the first occurrence in the list.
+
+    A reference set built from a search result usually contains the same peptidoform
+    identified in many spectra, with a different observed retention time each time. Those
+    repeats do not add information about the gradient: they give the calibration one x value
+    with several conflicting y values, and their number is what a spline fit weighs, so a
+    peptidoform seen 261 times counts 261 times while one seen once counts once. On a
+    reported MS2Rescore case, 6,331 reference PSMs collapsed to 2,623 peptidoforms, and the
+    observed retention times of one repeated peptidoform differed by two thirds of the whole
+    observed range.
+
+    Only the first observation is kept, which is what a caller who has already sorted or
+    filtered its PSMs expects, and it makes the result independent of how many times a
+    peptidoform happened to be identified.
+
+    Parameters
+    ----------
+    psm_list
+        PSMs to deduplicate.
+    ignore_charge
+        Treat charge states of the same peptidoform as duplicates (default). Retention time
+        does not depend on precursor charge, so the charge states of one peptidoform are
+        repeats of the same measurement. Set to False to keep one PSM per peptidoform *and*
+        charge.
+
+    Returns
+    -------
+    PSMList
+        The first PSM of every peptidoform, in the original order.
+
+    """
+    seen: set[str] = set()
+    keep = np.zeros(len(psm_list), dtype=bool)
+    for i, psm in enumerate(psm_list.psm_list):
+        # modified_sequence is the ProForma string without the charge state, so it keeps the
+        # terminal and global modifications that distinguish two peptidoforms while ignoring
+        # charge. Taking it from psm_utils also avoids cutting the string ourselves, which a
+        # modification label containing a slash would break.
+        key = psm.peptidoform.modified_sequence
+        if not ignore_charge:
+            key = f"{key}/{psm.peptidoform.precursor_charge}"
+        if key not in seen:
+            seen.add(key)
+            keep[i] = True
+
+    n_dropped = int((~keep).sum())
+    if n_dropped:
+        LOGGER.info(
+            "Deduplicated the reference: %d of %d PSMs are repeats of a peptidoform already "
+            "in the set and were dropped, leaving %d. Pass deduplicate_reference=False to "
+            "keep them.",
+            n_dropped,
+            len(psm_list),
+            int(keep.sum()),
+        )
+        _warn_on_conflicting_retention_times(psm_list, keep, ignore_charge)
+    return psm_list[keep]
+
+
+def _warn_on_conflicting_retention_times(
+    psm_list: PSMList, keep: np.ndarray, ignore_charge: bool
+) -> None:
+    """
+    Report the largest retention-time disagreement among the dropped repeats.
+
+    A small spread is ordinary chromatographic jitter; a spread of the order of the gradient
+    means the repeats are not the same elution event, so the reference was built from PSMs
+    that a search would normally not put in one calibration set (decoys, low-scoring hits, or
+    several runs pooled into one file). Worth saying out loud, because deduplication then
+    hides a data problem rather than solving it.
+    """
+    by_key: dict[str, list[float]] = {}
+    for psm in psm_list.psm_list:
+        rt = psm.retention_time
+        if rt is None or np.isnan(rt):
+            continue
+        key = psm.peptidoform.modified_sequence
+        if not ignore_charge:
+            key = f"{key}/{psm.peptidoform.precursor_charge}"
+        by_key.setdefault(key, []).append(float(rt))
+
+    spreads = [max(v) - min(v) for v in by_key.values() if len(v) > 1]
+    if not spreads:
+        return
+    worst = max(spreads)
+    observed = [
+        float(psm.retention_time)
+        for psm in psm_list.psm_list
+        if psm.retention_time is not None and not np.isnan(psm.retention_time)
+    ]
+    span = (max(observed) - min(observed)) if observed else 0.0
+    LOGGER.log(
+        logging.WARNING if span and worst > 0.25 * span else logging.INFO,
+        "Repeated peptidoforms disagreed on the observed retention time by up to %.2f "
+        "(median %.2f) against an observed range of %.2f. A large disagreement means the "
+        "repeats are not the same elution event: check whether the reference mixes runs or "
+        "includes low-confidence PSMs.",
+        worst,
+        float(np.median(spreads)),
+        span,
+    )

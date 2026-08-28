@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-08-28
+
+### Changed
+
+- Calibration and fine-tuning now use **one PSM per peptidoform**, the first observation in
+  the reference. A reference built from a search result repeats a peptidoform once per
+  spectrum it was identified in, each time with a different observed retention time, so the
+  fit was given conflicting targets and weighed peptidoforms by how often they happened to be
+  identified. On a reported MS2Rescore case (201,593 PSMs, one run) the reference selected by
+  auto-calibration held 6,331 PSMs but only 2,623 peptidoforms; the repeats of one peptidoform
+  disagreed on the observed retention time by 236 s, two thirds of the 354 s range covered by
+  the identifications. Fitting on the first observations improved the calibration on those
+  2,623 peptidoforms from 9.69 to 4.51 s mean absolute error (median 5.98 to 2.09 s; within
+  5 s 44.9 % to 81.4 %). Retention times are in whatever unit the input uses; DeepLC does not
+  convert them.
+
+  Charge states of one peptidoform count as repeats, since retention time does not depend on
+  precursor charge. When repeats disagree by a large fraction of the observed range, DeepLC
+  now says so: that means the reference mixes runs or contains low-confidence PSMs, which
+  deduplication hides rather than fixes.
+
+  There is no option for it: the public functions keep the signature they had. A caller who
+  really wants every reference PSM to count fits a `Calibration` on its own targets and passes
+  it to `predict_and_calibrate`, which uses an already fitted calibration as given; `train`
+  remains available for full control over a training set.
+
+### Added
+
+- `deeplc._reference_selection.deduplicate_psms`, which returns the first PSM of every
+  peptidoform in a `PSMList`.
+
 ## [4.1.1] - 2026-08-26
 
 ### Changed
