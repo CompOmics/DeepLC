@@ -9,6 +9,7 @@ from psm_utils import PSM, PSMList
 
 from deeplc import core
 from deeplc._reference_selection import deduplicate_psms
+from deeplc.calibration import SplineTransformerCalibration
 
 _PEPTIDES = [
     "AAGPSLSHTSGGTQSK",
@@ -113,48 +114,60 @@ def _reference_with_duplicates() -> PSMList:
     return _psms(pairs)
 
 
-def test_calibrate_uses_the_first_observations_by_default():
+def test_calibrate_always_uses_the_first_observations():
     """
-    ``calibrate`` fits on the deduplicated reference by default.
+    ``calibrate`` fits one point per peptidoform; there is no switch to turn that off.
 
     The reference holds each peptidoform twice: once on a clean 5 to 32 minute gradient and
-    once at a contradictory 82 to 100 minutes. A fit on the first observations must reproduce
-    the clean gradient, and a fit on every PSM must sit well above it, pulled by the repeats.
+    once at a contradictory 82 to 100 minutes. The fit must reproduce the clean gradient.
     """
     reference = _reference_with_duplicates()
     targets = _psms([(s, None) for s in _PEPTIDES])
+
+    calibration = core.calibrate(reference, predict_kwargs={"device": "cpu"})
     predicted = core.predict(targets, return_matrix=True)
+    calibrated = calibration.transform(predicted[:, calibration.selected_model_head or 0])
 
-    def fitted_mean(deduplicate: bool) -> float:
-        calibration = core.calibrate(
-            reference, predict_kwargs={"device": "cpu"}, deduplicate_reference=deduplicate
-        )
-        head = calibration.selected_model_head or 0
-        calibrated = calibration.transform(predicted[:, head])
-        assert np.isfinite(calibrated).all()
-        return float(calibrated.mean())
-
-    clean_low, clean_high = 5.0, 5.0 + 3.0 * (len(_PEPTIDES) - 1)  # the first observations
-    on, off = fitted_mean(True), fitted_mean(False)
-
-    assert clean_low <= on <= clean_high, f"deduplicated fit {on:.1f} left the clean gradient"
-    assert off > clean_high, f"fit on all PSMs {off:.1f} was not pulled above the gradient"
+    assert np.isfinite(calibrated).all()
+    clean_low, clean_high = 5.0, 5.0 + 3.0 * (len(_PEPTIDES) - 1)
+    mean = float(calibrated.mean())
+    assert clean_low <= mean <= clean_high, f"fit at {mean:.1f} left the clean gradient"
 
 
-def test_predict_and_calibrate_forwards_the_parameter():
-    """Both settings run end to end and give one prediction per input PSM."""
-    psm_list = _psms([(s, None) for s in _PEPTIDES])
+def test_a_prefitted_calibration_is_the_way_to_keep_the_repeats():
+    """
+    The escape hatch for the rare caller who wants every reference PSM to count.
+
+    ``calibrate`` deduplicates unconditionally, so a caller who wants the repeats weighed fits
+    a ``Calibration`` on its own targets and passes it in; ``predict_and_calibrate`` then uses
+    it as given instead of fitting one.
+    """
     reference = _reference_with_duplicates()
+    psm_list = _psms([(s, None) for s in _PEPTIDES])
 
-    on = core.predict_and_calibrate(
+    source = core.predict(reference, predict_kwargs={"device": "cpu"}, return_matrix=True)
+    own = SplineTransformerCalibration()
+    own.selected_model_head = 0
+    own.fit(target=np.array(reference["retention_time"], dtype=np.float32), source=source[:, 0])
+
+    kept = core.predict_and_calibrate(
+        psm_list, psm_list_reference=reference, calibration=own, predict_kwargs={"device": "cpu"}
+    )
+    deduplicated = core.predict_and_calibrate(
         psm_list, psm_list_reference=reference, predict_kwargs={"device": "cpu"}
     )
-    off = core.predict_and_calibrate(
-        psm_list,
-        psm_list_reference=reference,
-        predict_kwargs={"device": "cpu"},
-        deduplicate_reference=False,
-    )
 
-    assert on.shape == off.shape == (len(_PEPTIDES),)
-    assert not np.allclose(on, off)
+    assert kept.shape == deduplicated.shape == (len(_PEPTIDES),)
+    assert not np.allclose(kept, deduplicated)
+
+
+def test_predict_and_calibrate_runs_on_a_duplicated_reference():
+    """One prediction per input PSM, in the input order, whatever the reference looks like."""
+    psm_list = _psms([(s, None) for s in _PEPTIDES])
+    result = core.predict_and_calibrate(
+        psm_list,
+        psm_list_reference=_reference_with_duplicates(),
+        predict_kwargs={"device": "cpu"},
+    )
+    assert result.shape == (len(_PEPTIDES),)
+    assert np.isfinite(result).all()

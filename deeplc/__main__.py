@@ -126,14 +126,6 @@ def _validate_finetune(ctx, param, value):
     expose_value=True,
     help="Fine-tune the model to the reference before predicting. Requires --reference or --auto-calibrate.",  # noqa: E501
 )
-@click.option(
-    "--keep-duplicate-reference-psms",
-    is_flag=True,
-    default=False,
-    help="Fit the calibration (and fine-tuning) on every reference PSM, including repeats of "
-    "the same peptidoform. By default only the first PSM of each peptidoform is used, because "
-    "repeats carry conflicting observed retention times for one prediction.",
-)
 @click.option("--output", "-o", type=str, default=None, help="Output file path.")
 @click.option(
     "--model",
@@ -149,7 +141,6 @@ def predict(
     reference_filetype,
     auto_calibrate,
     finetune,
-    keep_duplicate_reference_psms,
     output,
     model,
 ):
@@ -159,7 +150,6 @@ def predict(
 
     psm_list = _read_psm_file(psms, psm_filetype)
     output_path = _infer_output_name(psms, output)
-    dedup = not keep_duplicate_reference_psms
 
     if reference:
         psm_list_reference = _read_psm_file(reference, reference_filetype)
@@ -168,24 +158,18 @@ def predict(
                 psm_list=psm_list,
                 psm_list_reference=psm_list_reference,
                 model=model,
-                deduplicate_reference=dedup,
             )
         else:
             predictions = deeplc.core.predict_and_calibrate(
                 psm_list=psm_list,
                 psm_list_reference=psm_list_reference,
                 model=model,
-                deduplicate_reference=dedup,
             )
     elif auto_calibrate:
         if finetune:
-            predictions = deeplc.core.finetune_and_predict(
-                psm_list=psm_list, model=model, deduplicate_reference=dedup
-            )
+            predictions = deeplc.core.finetune_and_predict(psm_list=psm_list, model=model)
         else:
-            predictions = deeplc.core.predict_and_calibrate(
-                psm_list=psm_list, model=model, deduplicate_reference=dedup
-            )
+            predictions = deeplc.core.predict_and_calibrate(psm_list=psm_list, model=model)
     else:
         predictions = deeplc.core.predict(psm_list=psm_list, model=model)
 

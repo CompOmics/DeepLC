@@ -27,9 +27,10 @@ and this project adheres to
   now says so: that means the reference mixes runs or contains low-confidence PSMs, which
   deduplication hides rather than fixes.
 
-  Pass `deduplicate_reference=False` to `calibrate`, `finetune`, `predict_and_calibrate` or
-  `finetune_and_predict`, or `--keep-duplicate-reference-psms` on the command line, to fit on
-  every reference PSM as before.
+  There is no option for it: the public functions keep the signature they had. A caller who
+  really wants every reference PSM to count fits a `Calibration` on its own targets and passes
+  it to `predict_and_calibrate`, which uses an already fitted calibration as given; `train`
+  remains available for full control over a training set.
 
 ### Added
 
