@@ -84,6 +84,44 @@ def test_modified_peptidoforms_are_not_duplicates():
     assert len(deduplicate_psms(psm_list)) == 2
 
 
+def test_exotic_peptidoforms_keep_their_identity():
+    """
+    The key is ``Peptidoform.modified_sequence``, so nothing but charge is ignored.
+
+    Terminal, global and labile modifications all distinguish two peptidoforms, and a
+    modification label may itself contain a slash, which is why the charge is not cut off the
+    ProForma string by hand.
+    """
+    distinct = [
+        "PEPTIDEK/2",
+        "[Acetyl]-PEPTIDEK/2",
+        "PEPTIDEK-[Amidated]/2",
+        "PEPTM[Oxidation]IDEK/2",
+        "PEPT[Phospho]IDEK/2",
+        "<[Carbamidomethyl]@C>PEPCTIDEK/2",
+        "PROT[Phospho|+79.966]EIN/2",
+    ]
+    psm_list = PSMList(
+        psm_list=[
+            PSM(spectrum_id=str(i), peptidoform=pf, retention_time=10.0 + i)
+            for i, pf in enumerate(distinct)
+        ]
+    )
+
+    assert len(deduplicate_psms(psm_list)) == len(distinct)
+
+
+def test_charge_adducts_do_not_create_a_second_peptidoform():
+    """``/2`` and ``/2[+2H]`` are the same peptidoform measured twice."""
+    psm_list = PSMList(
+        psm_list=[
+            PSM(spectrum_id="1", peptidoform="PEPTIDEK/2", retention_time=10.0),
+            PSM(spectrum_id="2", peptidoform="PEPTIDEK/2[+2H]", retention_time=11.0),
+        ]
+    )
+    assert len(deduplicate_psms(psm_list)) == 1
+
+
 def test_warns_when_repeats_disagree_on_the_retention_time(caplog):
     """
     A disagreement of the order of the gradient is a data problem, not jitter.

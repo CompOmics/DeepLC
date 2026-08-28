@@ -166,9 +166,13 @@ def deduplicate_psms(psm_list: PSMList, ignore_charge: bool = True) -> PSMList:
     seen: set[str] = set()
     keep = np.zeros(len(psm_list), dtype=bool)
     for i, psm in enumerate(psm_list.psm_list):
-        key = str(psm.peptidoform)
-        if ignore_charge:
-            key = key.rsplit("/", 1)[0]
+        # modified_sequence is the ProForma string without the charge state, so it keeps the
+        # terminal and global modifications that distinguish two peptidoforms while ignoring
+        # charge. Taking it from psm_utils also avoids cutting the string ourselves, which a
+        # modification label containing a slash would break.
+        key = psm.peptidoform.modified_sequence
+        if not ignore_charge:
+            key = f"{key}/{psm.peptidoform.precursor_charge}"
         if key not in seen:
             seen.add(key)
             keep[i] = True
@@ -204,9 +208,9 @@ def _warn_on_conflicting_retention_times(
         rt = psm.retention_time
         if rt is None or np.isnan(rt):
             continue
-        key = str(psm.peptidoform)
-        if ignore_charge:
-            key = key.rsplit("/", 1)[0]
+        key = psm.peptidoform.modified_sequence
+        if not ignore_charge:
+            key = f"{key}/{psm.peptidoform.precursor_charge}"
         by_key.setdefault(key, []).append(float(rt))
 
     spreads = [max(v) - min(v) for v in by_key.values() if len(v) > 1]
