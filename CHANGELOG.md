@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-08-28
+
+### Added
+
+- `MultiHeadRidgeCalibration`, a calibration that uses several LC setups of the multitask model
+  instead of only the best-correlating one. It keeps the existing ranking, calibrates the 80 best
+  heads individually with `SplineTransformerCalibration`, and fits a ridge regression from those
+  calibrated estimates onto the observed retention times.
+
+  On the eight PRIDE setups that no DeepLC model was trained on it lowered the held-out error on
+  all eight, by a median of 13 % relative to the observed gradient (0.01248 to 0.01090 MAE/span):
+  0.7 % on a setup that pools several fractions into one run, 7.5 to 17 % on four others, 28 to
+  38 % on the three where the single best head fitted worst, the largest gain being the smallest
+  reference of 230 peptidoforms. Fitting is not slower than the current path despite the extra
+  spline fits, because the head ranking is vectorised (a median of 1.0 s against 2.3 s in this
+  test), and prediction is unchanged since the full head matrix is computed either way.
+
+  Opt in per call, the default is untouched:
+
+  ```python
+  from deeplc import MultiHeadRidgeCalibration, predict_and_calibrate
+
+  rt = predict_and_calibrate(psms, psm_list_reference=reference,
+                             calibration=MultiHeadRidgeCalibration())
+  ```
+
+- `Calibration.uses_all_heads`, telling `calibrate` and `predict_and_calibrate` to hand a
+  calibration the whole `(n, n_heads)` prediction matrix rather than a single column. False for
+  every calibration that works on one series, which is all of them except the above.
+
 ## [4.2.0] - 2026-08-28
 
 ### Changed

@@ -22,6 +22,33 @@ The 4.0 default, ``multitask_model.pt`` (shared trunk, one head per setup), stay
 bundled as :data:`deeplc.core.LEGACY_MULTITASK_MODEL` and can be passed as
 ``model=`` to any core function to reproduce 4.0 and 4.1.0 predictions.
 
+Calibrating against several setups at once
+==========================================
+
+By default calibration keeps one output head: every head is ranked by Pearson correlation to the
+reference and a spline is fitted on the winner. A gradient that no trained setup matches exactly
+is then described by the closest single setup.
+
+:class:`~deeplc.calibration.MultiHeadRidgeCalibration` keeps that ranking but calibrates the 80
+best heads individually and fits a ridge regression from those calibrated estimates onto the
+observed retention times, so several setups contribute:
+
+.. code-block:: python
+
+   from deeplc import MultiHeadRidgeCalibration, predict_and_calibrate
+
+   calibrated_rt = predict_and_calibrate(
+       psm_list,
+       psm_list_reference=reference,
+       calibration=MultiHeadRidgeCalibration(),
+   )
+
+On eight PRIDE setups that no DeepLC model was trained on, this lowered the held-out error on all
+eight, by a median of 13 % relative to the gradient and by up to 38 % on the smallest reference
+(230 peptidoforms). The number of heads is the one parameter worth changing: 80 sits on a flat
+optimum between roughly 40 and 320, and the class never fits more weights than half the reference
+allows. Prediction costs nothing extra, because the full head matrix is computed either way.
+
 Training a model from scratch
 ==============================
 

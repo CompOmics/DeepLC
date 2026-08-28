@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from deeplc.calibration import MultiHeadRidgeCalibration
 from deeplc.core import (
     calibrate,
     finetune,
@@ -14,6 +15,7 @@ from deeplc.core import (
 
 __version__: str = version("deeplc")
 __all__: list[str] = [
+    "MultiHeadRidgeCalibration",
     "calibrate",
     "predict",
     "predict_and_calibrate",

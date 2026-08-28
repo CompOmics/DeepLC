@@ -203,6 +203,12 @@ def calibrate(
     LOGGER.debug("Fitting calibration...")
     target_rt_cal = np.array(psm_list_reference["retention_time"], dtype=np.float32)
 
+    # A calibration that combines heads is given the whole matrix and picks its own; it sets
+    # selected_model_head itself, for callers that want to know which setup came out on top.
+    if getattr(calibration, "uses_all_heads", False):
+        calibration.fit(target=target_rt_cal, source=source_rt_cal)
+        return calibration
+
     # Select the best head for calibration if the model predicts for multiple LC setups
     if source_rt_cal.shape[1] > 1:
         calibration.selected_model_head = _best_correlating_head(source_rt_cal, target_rt_cal)
@@ -277,6 +283,10 @@ def predict_and_calibrate(
         )
     else:
         LOGGER.info("Calibration is already fitted, skipping fitting step.")
+
+    if getattr(calibration, "uses_all_heads", False):
+        # the calibration combines several heads, so it takes the matrix as it is
+        return calibration.transform(predicted_rt)
 
     if predicted_rt.shape[1] > 1:
         if calibration.selected_model_head is None:
