@@ -139,8 +139,9 @@ def deduplicate_psms(psm_list: PSMList, ignore_charge: bool = True) -> PSMList:
     repeats do not add information about the gradient: they give the calibration one x value
     with several conflicting y values, and their number is what a spline fit weighs, so a
     peptidoform seen 261 times counts 261 times while one seen once counts once. On a
-    published MS2Rescore case, 6,331 reference PSMs collapsed to 2,623 peptidoforms, and the
-    retention times of a repeated peptidoform differed by up to 236 minutes.
+    reported MS2Rescore case, 6,331 reference PSMs collapsed to 2,623 peptidoforms, and the
+    observed retention times of one repeated peptidoform differed by two thirds of the whole
+    observed range.
 
     Only the first observation is kept, which is what a caller who has already sorted or
     filtered its PSMs expects, and it makes the result independent of how many times a

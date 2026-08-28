@@ -15,10 +15,12 @@ and this project adheres to
   spectrum it was identified in, each time with a different observed retention time, so the
   fit was given conflicting targets and weighed peptidoforms by how often they happened to be
   identified. On a reported MS2Rescore case (201,593 PSMs, one run) the reference selected by
-  auto-calibration held 6,331 PSMs but only 2,623 peptidoforms; the repeats disagreed on the
-  observed retention time by up to 236 minutes. Fitting on the first observations improved the
-  calibration on those 2,623 peptidoforms from 9.69 to 4.51 minutes mean absolute error
-  (median 5.98 to 2.09; within 5 minutes 44.9 % to 81.4 %).
+  auto-calibration held 6,331 PSMs but only 2,623 peptidoforms; the repeats of one peptidoform
+  disagreed on the observed retention time by 236 s, two thirds of the 354 s range covered by
+  the identifications. Fitting on the first observations improved the calibration on those
+  2,623 peptidoforms from 9.69 to 4.51 s mean absolute error (median 5.98 to 2.09 s; within
+  5 s 44.9 % to 81.4 %). Retention times are in whatever unit the input uses; DeepLC does not
+  convert them.
 
   Charge states of one peptidoform count as repeats, since retention time does not depend on
   precursor charge. When repeats disagree by a large fraction of the observed range, DeepLC
