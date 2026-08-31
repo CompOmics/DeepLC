@@ -105,7 +105,7 @@ edits and capped beyond):
 .. code-block:: python
 
    report = prediction_report(psm_list, psm_list_reference=reference,
-                              training_index="path/to/training_index_v6f")
+                              training_index="deeplc_training_index_v6f.dlcidx")
 
 Python API
 ==========

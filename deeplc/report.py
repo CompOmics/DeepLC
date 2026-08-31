@@ -84,32 +84,68 @@ def canonical_peptidoform_key(peptidoform: Peptidoform | str) -> str:
 
 class TrainingIndex:
     """
-    Memory-mapped index of the corpus behind the bundled multitask model.
+    Index of the corpus behind the bundled multitask model.
 
-    Built offline from the training cache (10,105,640 canonical peptidoform keys and their
-    65,139,832 peptidoform-setup observations over 6,543 setups) and loaded from a directory:
-    ``key_hashes.npy`` (sorted xxh3-64 of the canonical keys), ``task_indptr.npy`` /
-    ``task_cols.npy`` (which setups each peptidoform was observed in), ``sequences.npy`` /
-    ``seq_lengths.npy`` (unique stripped sequences, for edit distances) and ``meta.json``.
+    Answers, for any canonical peptidoform key: was it trained on at all, was it trained on
+    within given setups, and how far is its sequence from the closest training sequence. Built
+    offline from the training cache (10,105,640 canonical keys, 65,139,832 peptidoform-setup
+    observations over 6,543 setups) and distributed separately from the package.
 
-    Everything is memory-mapped, so opening the index costs nothing until it is used.
+    Two on-disk forms are read:
+
+    - a single ``.dlcidx`` file (format 2): an LZMA-compressed zip holding 40-bit key hashes in
+      a bucketed layout, per-key setup lists and the unique sequences; about 105 MB. Membership
+      through 40-bit hashes can produce a false positive roughly once per 100,000 queries,
+      which is negligible for a provenance flag;
+    - a directory with ``key_hashes.npy`` (full 64-bit, exact), ``task_indptr.npy``,
+      ``task_cols.npy``, ``sequences.txt`` and ``meta.json`` (format 1, memory-mapped).
     """
 
     def __init__(self, path: PathLike | str) -> None:
-        """Open a training index directory."""
+        """Open a packed ``.dlcidx`` file or a training index directory."""
         self.path = Path(path)
-        meta_file = self.path / "meta.json"
-        if not meta_file.exists():
-            raise FileNotFoundError(
-                f"{self.path} is not a training index (no meta.json). It is built offline "
-                "from the training cache and distributed separately from the package."
-            )
-        self.meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        self._hashes = np.load(self.path / "key_hashes.npy", mmap_mode="r")
-        self._indptr = np.load(self.path / "task_indptr.npy", mmap_mode="r")
-        self._cols = np.load(self.path / "task_cols.npy", mmap_mode="r")
         self._sequences: np.ndarray | None = None
         self._seq_lengths: np.ndarray | None = None
+        if self.path.is_file():
+            self._open_packed()
+        elif (self.path / "meta.json").exists():
+            self._open_directory()
+        else:
+            raise FileNotFoundError(
+                f"{self.path} is not a training index (neither a .dlcidx file nor a directory "
+                "with meta.json). It is built offline from the training cache and distributed "
+                "separately from the package."
+            )
+
+    def _open_directory(self) -> None:
+        self.meta = json.loads((self.path / "meta.json").read_text(encoding="utf-8"))
+        self._hash_shift = 0
+        self._hashes = np.load(self.path / "key_hashes.npy", mmap_mode="r")
+        indptr = np.load(self.path / "task_indptr.npy", mmap_mode="r")
+        self._indptr = np.asarray(indptr, dtype=np.int64)
+        self._cols = np.load(self.path / "task_cols.npy", mmap_mode="r")
+
+    def _open_packed(self) -> None:
+        import zipfile
+
+        with zipfile.ZipFile(self.path) as archive:
+            self.meta = json.loads(archive.read("meta.json").decode("utf-8"))
+            if int(self.meta.get("format_version", 0)) != 2:
+                raise ValueError(
+                    f"{self.path} has format_version {self.meta.get('format_version')}; "
+                    "this DeepLC reads format 2."
+                )
+            counts = np.frombuffer(archive.read("hash_bucket_counts.u8"), dtype=np.uint8)
+            remainders = np.frombuffer(archive.read("hash_remainders.u16"), dtype=np.uint16)
+            row_lengths = np.frombuffer(archive.read("row_lengths.u16"), dtype=np.uint16)
+            self._cols = np.frombuffer(archive.read("task_cols.i16"), dtype=np.int16)
+            self._sequences_blob = archive.read("sequences.txt")
+        highs = np.repeat(np.arange(len(counts), dtype=np.uint64), counts)
+        self._hashes = (highs << np.uint64(16)) | remainders.astype(np.uint64)
+        self._hash_shift = 64 - int(self.meta["hash_bits"])
+        indptr = np.zeros(len(row_lengths) + 1, dtype=np.int64)
+        np.cumsum(row_lengths, out=indptr[1:])
+        self._indptr = indptr
 
     @staticmethod
     def _hash(keys: list[str]) -> np.ndarray:
@@ -126,6 +162,8 @@ class TrainingIndex:
     def _rows(self, keys: list[str]) -> np.ndarray:
         """Index of each key in the sorted hash array, or -1 when absent."""
         hashes = self._hash(keys)
+        if self._hash_shift:
+            hashes = hashes >> np.uint64(self._hash_shift)
         position = np.searchsorted(self._hashes, hashes)
         position = np.clip(position, 0, len(self._hashes) - 1)
         found = self._hashes[position] == hashes
@@ -178,9 +216,13 @@ class TrainingIndex:
         from rapidfuzz.process import cdist
 
         if self._sequences is None:
-            blob = (self.path / "sequences.txt").read_bytes().decode("ascii")
+            if hasattr(self, "_sequences_blob"):
+                blob = self._sequences_blob.decode("ascii")
+                del self._sequences_blob
+            else:
+                blob = (self.path / "sequences.txt").read_bytes().decode("ascii")
             self._sequences = np.array(blob.split(chr(10)), dtype=object)
-            self._seq_lengths = np.load(self.path / "seq_lengths.npy")
+            self._seq_lengths = np.array([len(x) for x in self._sequences], dtype=np.int16)
         unique, inverse = np.unique(np.asarray(sequences, dtype=object), return_inverse=True)
         exact = np.isin(unique, self._sequences)
         per_unique = np.full(len(unique), -1, dtype=np.int32)

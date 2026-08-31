@@ -26,11 +26,13 @@ and this project adheres to
   to 0.97 per setup (median 0.91), with widths from 4 % of the gradient on well-behaved setups
   to 79 % on a run that pools several fractions. Coverage is marginal, not per-peptide.
 
-- `TrainingIndex`: a memory-mapped index of the multitask training corpus (10,105,640
-  canonical peptidoform keys, their 65,139,832 setup observations, 6,157,558 unique stripped
-  sequences; about 400 MB on disk). Built offline from the training cache and distributed
-  separately from the package; `prediction_report` takes it as an optional argument and works
-  without it.
+- `TrainingIndex`: an index of the multitask training corpus (10,105,640 canonical
+  peptidoform keys, their 65,139,832 setup observations, 6,157,558 unique stripped sequences).
+  Distributed separately from the package as a single 105 MB `.dlcidx` file: an LZMA zip
+  holding 40-bit key hashes in a bucketed layout (false positive about once per 100,000
+  membership queries, irrelevant for a provenance flag), per-key setup lists and the unique
+  sequences. A raw memory-mapped directory form with exact 64-bit hashes is read as well.
+  `prediction_report` takes either as an optional argument and works without one.
 
 - Dependency: `rapidfuzz` (Levenshtein distances).
 

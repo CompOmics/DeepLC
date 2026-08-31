@@ -108,9 +108,9 @@ def test_thin_bins_fall_back_to_the_global_quantile():
 # training index, built small and on the fly
 
 
-@pytest.fixture()
-def tiny_index(tmp_path: Path) -> TrainingIndex:
-    """Three peptidoforms over three setups, written in the real on-disk format."""
+@pytest.fixture(params=["directory", "packed"])
+def tiny_index(request, tmp_path: Path) -> TrainingIndex:
+    """Three peptidoforms over three setups, in both on-disk formats."""
     keys = ["AAGPSLSHTSGGTQSK|", "AGFAGDDAPR|7|U:35", "LNLSPLGEEMR|"]
     tasks = [[0], [0, 2], [1]]
     hashes = TrainingIndex._hash(keys)
@@ -130,7 +130,36 @@ def tiny_index(tmp_path: Path) -> TrainingIndex:
     (tmp_path / "meta.json").write_text(
         json.dumps({"format_version": 1, "n_peptidoforms": 3, "n_tasks": 3, "n_observations": 4})
     )
-    return TrainingIndex(tmp_path)
+    if request.param == "directory":
+        return TrainingIndex(tmp_path)
+
+    import zipfile
+
+    h40 = (hashes[order] >> np.uint64(24)).astype(np.uint64)
+    counts = np.bincount((h40 >> np.uint64(16)).astype(np.int64), minlength=1 << 24)
+    packed = tmp_path / "tiny.dlcidx"
+    with zipfile.ZipFile(packed, "w", compression=zipfile.ZIP_LZMA) as archive:
+        archive.writestr(
+            "meta.json",
+            json.dumps(
+                {
+                    "format_version": 2,
+                    "hash_bits": 40,
+                    "n_tasks": 3,
+                    "n_peptidoforms": 3,
+                    "n_observations": 4,
+                }
+            ),
+        )
+        archive.writestr("hash_bucket_counts.u8", counts.astype(np.uint8).tobytes())
+        archive.writestr(
+            "hash_remainders.u16", (h40 & np.uint64(0xFFFF)).astype(np.uint16).tobytes()
+        )
+        archive.writestr("row_lengths.u16", np.diff(indptr).astype(np.uint16).tobytes())
+        archive.writestr("task_cols.i16", np.array(cols, dtype=np.int16).tobytes())
+        archive.writestr("sequences.txt", chr(10).join(sequences).encode("ascii"))
+        archive.writestr("task_names.json", json.dumps(["setup_a", "setup_b", "setup_c"]))
+    return TrainingIndex(packed)
 
 
 def test_index_membership_and_per_task_membership(tiny_index: TrainingIndex):
@@ -158,6 +187,17 @@ def test_index_refuses_a_directory_that_is_not_an_index(tmp_path: Path):
     """A random directory raises instead of pretending to be an index."""
     with pytest.raises(FileNotFoundError, match="training index"):
         TrainingIndex(tmp_path)
+
+
+def test_packed_index_with_an_unknown_format_version_is_refused(tmp_path: Path):
+    """A future format fails loudly instead of being misread."""
+    import zipfile
+
+    packed = tmp_path / "future.dlcidx"
+    with zipfile.ZipFile(packed, "w") as archive:
+        archive.writestr("meta.json", json.dumps({"format_version": 99}))
+    with pytest.raises(ValueError, match="format_version"):
+        TrainingIndex(packed)
 
 
 # --------------------------------------------------------------------------- #
