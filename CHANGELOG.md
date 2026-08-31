@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-08-31
+
+### Added
+
+- `prediction_report`: predictions with provenance and uncertainty per PSM. Returns a
+  DataFrame with, next to `predicted_rt`: a conformal prediction interval (`ci_lower`,
+  `ci_upper`) at a chosen coverage, exact-match membership against the calibration reference
+  (`in_reference`) and the Levenshtein distance to the closest reference sequence
+  (`dist_to_reference`); with a training index also membership in the corpus the bundled
+  multitask model was trained on (`in_training`), membership within the training sets of the
+  setups the calibration selected (`in_selected_heads_training`) and the distance to the
+  closest training sequence (`dist_to_training`, exact up to 10 and capped beyond).
+
+  The interval is cross-fitted split-conformal on the reference: the reference is split into
+  folds, each fold is predicted by a calibration fitted on the other folds, and the half-width
+  is a finite-sample quantile of those honest residuals per predicted-RT bin. On eight PRIDE
+  setups no DeepLC model was trained on, the empirical coverage of the 90 % interval was 0.88
+  to 0.97 per setup (median 0.91), with widths from 4 % of the gradient on well-behaved setups
+  to 79 % on a run that pools several fractions. Coverage is marginal, not per-peptide.
+
+- `TrainingIndex`: a memory-mapped index of the multitask training corpus (10,105,640
+  canonical peptidoform keys, their 65,139,832 setup observations, 6,157,558 unique stripped
+  sequences; about 400 MB on disk). Built offline from the training cache and distributed
+  separately from the package; `prediction_report` takes it as an optional argument and works
+  without it.
+
+- Dependency: `rapidfuzz` (Levenshtein distances).
+
 ## [4.3.0] - 2026-09-02
 
 ### Changed

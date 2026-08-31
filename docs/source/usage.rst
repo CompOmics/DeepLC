@@ -76,6 +76,37 @@ For a full list of options:
    deeplc predict --help
 
 
+Prediction reports
+==================
+
+:func:`deeplc.prediction_report` returns predictions together with what a bare number cannot
+say: whether the model has seen the peptidoform, how far the nearest known sequence is, and how
+far off the prediction may plausibly be.
+
+.. code-block:: python
+
+   from deeplc import prediction_report
+
+   report = prediction_report(psm_list, psm_list_reference=reference, coverage=0.90)
+   report[["peptidoform", "predicted_rt", "ci_lower", "ci_upper",
+           "in_reference", "dist_to_reference"]]
+
+The interval is a cross-fitted conformal interval calibrated on the reference, so its coverage
+holds on peptides exchangeable with the reference, without retraining and regardless of the
+model. Pass ``calibration=MultiHeadRidgeCalibration()`` to combine setups; the membership
+column then covers every selected head.
+
+With a training index (built from the multitask training corpus and distributed separately),
+three more columns appear: ``in_training`` (exact peptidoform match anywhere in the corpus),
+``in_selected_heads_training`` (match within the setups the calibration selected) and
+``dist_to_training`` (Levenshtein distance to the closest training sequence, exact up to ten
+edits and capped beyond):
+
+.. code-block:: python
+
+   report = prediction_report(psm_list, psm_list_reference=reference,
+                              training_index="path/to/training_index_v6f")
+
 Python API
 ==========
 
