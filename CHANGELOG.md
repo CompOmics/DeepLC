@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-09-02
+
+### Changed
+
+- Calibration of a multitask model now combines several LC-setup heads instead of keeping only
+  the best-correlating one. `calibrate` and `predict_and_calibrate` default to the new
+  `MultiHeadRidgeCalibration`: heads are ranked by Pearson correlation to the reference as
+  before, the 80 best are each calibrated with `SplineTransformerCalibration`, and a ridge
+  regression maps the calibrated estimates onto the observed retention times.
+
+  On the eight PRIDE setups that no DeepLC model was trained on this lowered the held-out error
+  on all eight, by a median of 13 % relative to the observed gradient (0.01248 to 0.01090
+  MAE/span). Fitting is faster than the previous path because the head ranking is vectorised
+  (median 1.0 s against 2.3 s), and prediction is unchanged since the full head matrix is
+  computed either way.
+
+  Single-task models keep the previous default (`SplineTransformerCalibration`), and passing
+  a calibration instance restores the old behaviour on any model:
+
+  ```python
+  from deeplc import predict_and_calibrate
+  from deeplc.calibration import SplineTransformerCalibration
+
+  rt = predict_and_calibrate(psms, psm_list_reference=reference,
+                             calibration=SplineTransformerCalibration())
+  ```
+
+### Added
+
+- `Calibration.uses_all_heads`, telling `calibrate` and `predict_and_calibrate` to hand a
+  calibration the whole `(n, n_heads)` prediction matrix rather than a single column.
+
 ## [4.2.0] - 2026-08-28
 
 ### Changed

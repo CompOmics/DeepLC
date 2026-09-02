@@ -164,7 +164,10 @@ def test_calibrate_always_uses_the_first_observations():
 
     calibration = core.calibrate(reference, predict_kwargs={"device": "cpu"})
     predicted = core.predict(targets, return_matrix=True)
-    calibrated = calibration.transform(predicted[:, calibration.selected_model_head or 0])
+    if calibration.uses_all_heads:
+        calibrated = calibration.transform(predicted)
+    else:
+        calibrated = calibration.transform(predicted[:, calibration.selected_model_head or 0])
 
     assert np.isfinite(calibrated).all()
     clean_low, clean_high = 5.0, 5.0 + 3.0 * (len(_PEPTIDES) - 1)

@@ -22,6 +22,31 @@ The 4.0 default, ``multitask_model.pt`` (shared trunk, one head per setup), stay
 bundled as :data:`deeplc.core.LEGACY_MULTITASK_MODEL` and can be passed as
 ``model=`` to any core function to reproduce 4.0 and 4.1.0 predictions.
 
+Calibrating against several setups at once
+==========================================
+
+Since 4.3.0 a multitask model is calibrated with
+:class:`~deeplc.calibration.MultiHeadRidgeCalibration` by default: every head is ranked by
+Pearson correlation to the reference, the 80 best are calibrated individually, and a ridge
+regression maps those calibrated estimates onto the observed retention times, so several setups
+contribute. The number of heads is the one parameter worth changing: 80 sits on a flat optimum
+between roughly 40 and 320, and the class never fits more weights than half the reference allows.
+Prediction costs nothing extra, because the full head matrix is computed either way.
+
+The previous behaviour, a spline on the single best-correlating head, remains available by
+passing the calibration explicitly (it is also still the default for single-task models):
+
+.. code-block:: python
+
+   from deeplc import predict_and_calibrate
+   from deeplc.calibration import SplineTransformerCalibration
+
+   calibrated_rt = predict_and_calibrate(
+       psm_list,
+       psm_list_reference=reference,
+       calibration=SplineTransformerCalibration(),
+   )
+
 Training a model from scratch
 ==============================
 
