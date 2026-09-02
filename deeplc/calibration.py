@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import cast
 
 import numpy as np
-from sklearn.linear_model import LinearRegression  # type: ignore[import]
+from sklearn.linear_model import LinearRegression, RidgeCV  # type: ignore[import]
 from sklearn.pipeline import Pipeline, make_pipeline  # type: ignore[import]
 from sklearn.preprocessing import SplineTransformer  # type: ignore[import]
 
@@ -21,9 +21,8 @@ class Calibration(ABC):
 
     selected_model_head: int | None = None
 
-    #: Whether ``fit`` and ``transform`` take the whole ``(n, n_heads)`` prediction matrix of a
-    #: multitask model instead of a single series. False for every calibration here except
-    #: :class:`MultiHeadRidgeCalibration`.
+    #: Whether ``fit`` and ``transform`` take the full ``(n, n_heads)`` prediction matrix
+    #: instead of a single series.
     uses_all_heads: bool = False
 
     @abstractmethod
@@ -332,32 +331,20 @@ class SplineTransformerCalibration(Calibration):
 
 class MultiHeadRidgeCalibration(Calibration):
     """
-    Calibrate against several LC setups of a multitask model at once.
+    Calibrate a multitask model against several of its LC-setup heads at once.
 
-    The default path keeps one setup head: it ranks all heads by Pearson correlation to the
-    reference and fits a spline on the winner. A gradient that no trained setup matches exactly
-    is then described by the closest single setup, and the rest of the matrix is discarded.
-
-    This calibration keeps that ranking, calibrates the ``n_heads`` best heads individually with
-    :class:`SplineTransformerCalibration`, and fits a ridge regression from those calibrated
-    estimates onto the observed retention times. Every head therefore contributes an estimate
-    already in the unit of the reference, and the ridge decides how much to trust each one.
-
-    On the eight PRIDE setups that no DeepLC model was trained on, this lowered the held-out
-    error on all eight: a median of 13 % relative to the observed gradient (0.01248 to 0.01090
-    MAE/span), from 1 % on a setup whose retention times are not a single gradient to 38 % on the
-    smallest reference of 230 peptidoforms. The cost is ``n_heads`` spline fits and one ridge on
-    the reference; prediction is unchanged, because the full matrix is computed either way.
+    Heads are ranked by Pearson correlation to the reference, the ``n_heads`` best are each
+    calibrated with :class:`SplineTransformerCalibration`, and a ridge regression maps the
+    calibrated estimates onto the observed retention times. Never fits more head weights than
+    half the reference size. For a single-task model (one head) this reduces to a spline
+    followed by a linear rescaling.
 
     Parameters
     ----------
     n_heads
-        How many of the best-correlating heads to combine. 80 sits on the flat part of the
-        optimum for references from 230 to 2,000 peptidoforms; below about ten the gain shrinks,
-        and beyond a few hundred it slowly reverses.
+        How many of the best-correlating heads to combine.
     alphas
-        Ridge strengths offered to the internal cross-validation. The default spans 1e-3 to 1e6,
-        wide enough for the fit to collapse towards an average when the reference is small.
+        Ridge strengths offered to the internal cross-validation.
 
     """
 
@@ -392,8 +379,6 @@ class MultiHeadRidgeCalibration(Calibration):
             accepted and treated as a single head, so a single-task model still works.
 
         """
-        from sklearn.linear_model import RidgeCV
-
         source = np.asarray(source, dtype=np.float64)
         if source.ndim == 1:
             source = source[:, None]
