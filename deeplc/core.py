@@ -15,6 +15,7 @@ from deeplc import _model_ops
 from deeplc._reference_selection import deduplicate_psms, select_reference_psms
 from deeplc.calibration import (
     Calibration,
+    MultiHeadRidgeCalibration,
     SplineTransformerCalibration,
 )
 from deeplc.data import DeepLCDataset, split_datasets
@@ -154,7 +155,9 @@ def calibrate(
     model
         Trained model or path to model file.
     calibration
-        Calibration instance to use. If None, SplineTransformerCalibration is used.
+        Calibration instance to use. If None, a multitask model gets
+        MultiHeadRidgeCalibration (combining the best-correlating setup heads) and a
+        single-task model gets SplineTransformerCalibration.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
 
@@ -171,15 +174,11 @@ def calibrate(
     # Calibration itself and passes it in already fitted.
     psm_list_reference = deduplicate_psms(psm_list_reference)
 
-    # Get calibration
-    if calibration is None:
-        LOGGER.debug("No calibration provided, using SplineTransformerCalibration by default.")
-        calibration = SplineTransformerCalibration()
-    elif not isinstance(calibration, Calibration):
+    if calibration is not None and not isinstance(calibration, Calibration):
         raise ValueError(
             f"Expected calibration to be of type `Calibration`, got {type(calibration)}"
         )
-    if calibration.is_fitted:
+    if calibration is not None and calibration.is_fitted:
         LOGGER.warning(
             "Provided Calibration is already fitted. Refitting will overwrite existing fit."
         )
@@ -198,6 +197,15 @@ def calibrate(
         predict_kwargs=predict_kwargs,
         return_matrix=True,
     )
+
+    # The default depends on the model: a multitask model is calibrated against its
+    # best-correlating setup heads combined, a single-task model against its one output.
+    if calibration is None:
+        if source_rt_cal.shape[1] > 1:
+            calibration = MultiHeadRidgeCalibration()
+        else:
+            calibration = SplineTransformerCalibration()
+        LOGGER.debug("No calibration provided, using %s.", type(calibration).__name__)
 
     # Fit calibration
     LOGGER.debug("Fitting calibration...")
@@ -241,7 +249,9 @@ def predict_and_calibrate(
     model
         Trained model or path to model file.
     calibration
-        Calibration instance to use. If None, SplineTransformerCalibration is used.
+        Calibration instance to use. If None, a multitask model gets
+        MultiHeadRidgeCalibration (combining the best-correlating setup heads) and a
+        single-task model gets SplineTransformerCalibration.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function.
 

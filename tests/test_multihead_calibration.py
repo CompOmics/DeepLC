@@ -168,9 +168,22 @@ def test_core_hands_the_matrix_over_and_predicts_end_to_end():
     assert np.isfinite(predicted).all()
 
 
-def test_core_still_selects_one_head_for_an_ordinary_calibration():
-    """The default path is untouched: one head, chosen by correlation."""
+def test_default_calibration_combines_heads_for_the_multitask_model():
+    """With no calibration given, the bundled multitask model is calibrated on several heads."""
     reference = _psm_list([5.0 + 3.0 * i for i in range(len(_PEPTIDES))])
     calibration = core.calibrate(reference, predict_kwargs={"device": "cpu"})
+    assert isinstance(calibration, MultiHeadRidgeCalibration)
+    assert calibration.is_fitted
+    assert calibration.selected_model_head is not None
+
+
+def test_single_head_calibration_remains_available():
+    """Passing SplineTransformerCalibration restores the one-head behaviour."""
+    reference = _psm_list([5.0 + 3.0 * i for i in range(len(_PEPTIDES))])
+    calibration = core.calibrate(
+        reference,
+        calibration=SplineTransformerCalibration(),
+        predict_kwargs={"device": "cpu"},
+    )
     assert calibration.uses_all_heads is False
     assert calibration.selected_model_head is not None
