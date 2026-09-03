@@ -307,9 +307,7 @@ class _ConformalInterval:
         interval.edges, interval.half_width = edges, half_width
         return interval
 
-    def widths(
-        self, predicted: np.ndarray, difficulty: np.ndarray | None = None
-    ) -> np.ndarray:
+    def widths(self, predicted: np.ndarray, difficulty: np.ndarray | None = None) -> np.ndarray:
         """Interval half-width for each prediction."""
         bins = np.clip(np.searchsorted(self.edges, predicted, side="right") - 1, 0, _N_RT_BINS - 1)
         widths = self.half_width[bins]

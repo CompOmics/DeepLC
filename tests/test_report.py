@@ -303,8 +303,9 @@ def test_report_widths_vary_per_peptide_with_a_multihead_calibration():
     from deeplc.calibration import MultiHeadRidgeCalibration
 
     queries = PSMList(
-        psm_list=[PSM(spectrum_id=str(i), peptidoform=f"{seq}/2")
-                  for i, seq in enumerate(_PEPTIDES)]
+        psm_list=[
+            PSM(spectrum_id=str(i), peptidoform=f"{seq}/2") for i, seq in enumerate(_PEPTIDES)
+        ]
     )
     per_peptide, per_bin = (
         prediction_report(
@@ -325,8 +326,9 @@ def test_report_widths_vary_per_peptide_with_a_multihead_calibration():
 def test_report_falls_back_to_rt_only_widths_without_disagreement():
     """A single-head calibration has no per-peptide signal, so the flag changes nothing."""
     queries = PSMList(
-        psm_list=[PSM(spectrum_id=str(i), peptidoform=f"{seq}/2")
-                  for i, seq in enumerate(_PEPTIDES)]
+        psm_list=[
+            PSM(spectrum_id=str(i), peptidoform=f"{seq}/2") for i, seq in enumerate(_PEPTIDES)
+        ]
     )
     report = prediction_report(
         queries,
