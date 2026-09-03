@@ -26,6 +26,19 @@ and this project adheres to
   to 0.97 per setup (median 0.91), with widths from 4 % of the gradient on well-behaved setups
   to 79 % on a run that pools several fractions. Coverage is marginal, not per-peptide.
 
+  With a multi-head calibration the width is also **per peptide** (`per_peptide_width`, on by
+  default): the residuals are divided by how far the combined setup heads lie apart for that
+  peptide before the quantile is taken, and multiplied by it again at prediction time. Two
+  peptides predicted at the same retention time therefore no longer share one interval. On the
+  six held-out setups this raised the worst conditional slice from 0.851 to 0.882 and the
+  Spearman correlation between width and error from 0.15 to 0.25, for 10 % wider intervals;
+  the largest gains are on the setups where the RT-only width was weakest. Set
+  `per_peptide_width=False` for widths that depend on the predicted retention time alone.
+
+- `Calibration.disagreement`, the per-input uncertainty a calibration can report, implemented
+  by `MultiHeadRidgeCalibration` as the ridge-weighted spread of its calibrated head
+  estimates and returning None elsewhere.
+
 - `TrainingIndex`: an index of the multitask training corpus (10,105,640 canonical
   peptidoform keys, their 65,139,832 setup observations, 6,157,558 unique stripped sequences).
   Distributed separately from the package as a single 105 MB `.dlcidx` file: an LZMA zip

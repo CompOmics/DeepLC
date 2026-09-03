@@ -47,6 +47,10 @@ _N_RT_BINS = 5
 _MIN_RESIDUALS_PER_BIN = 40
 _N_FOLDS = 5
 
+#: Range the per-peptide difficulty score may scale an interval by, relative to the median
+#: peptide of the reference.
+_RATIO_CLIP = (0.2, 5.0)
+
 
 def canonical_peptidoform_key(peptidoform: Peptidoform | str) -> str:
     """
@@ -250,11 +254,20 @@ class TrainingIndex:
 
 @dataclass
 class _ConformalInterval:
-    """RT-binned conformal half-widths, fitted on honest reference residuals."""
+    """
+    Conformal half-widths per RT bin, fitted on honest reference residuals.
+
+    With a per-input difficulty score, the residuals are divided by that score before the
+    quantile is taken and multiplied by it again at prediction time, so peptides predicted at
+    the same retention time no longer share one width. Without a score the width depends on
+    the predicted retention time alone.
+    """
 
     coverage: float
     edges: np.ndarray = field(default_factory=lambda: np.array([]))
     half_width: np.ndarray = field(default_factory=lambda: np.array([]))
+    scale: float | None = None
+    floor: float = 0.0
 
     @staticmethod
     def _finite_sample_quantile(abs_residuals: np.ndarray, coverage: float) -> float:
@@ -262,12 +275,26 @@ class _ConformalInterval:
         rank = min(int(np.ceil((n + 1) * coverage)), n)
         return float(np.sort(abs_residuals)[rank - 1])
 
+    def _ratio(self, difficulty: np.ndarray) -> np.ndarray:
+        bounded = np.maximum(np.asarray(difficulty, dtype=float), self.floor)
+        return np.clip(bounded / self.scale, *_RATIO_CLIP)
+
     @classmethod
     def fit(
-        cls, predicted: np.ndarray, residuals: np.ndarray, coverage: float
+        cls,
+        predicted: np.ndarray,
+        residuals: np.ndarray,
+        coverage: float,
+        difficulty: np.ndarray | None = None,
     ) -> _ConformalInterval:
         """Per-RT-bin conformal quantiles with a global fallback for thin bins."""
+        interval = cls(coverage=coverage)
         absolute = np.abs(residuals)
+        if difficulty is not None:
+            difficulty = np.asarray(difficulty, dtype=float)
+            interval.floor = max(float(np.quantile(difficulty, 0.05)), np.finfo(float).tiny)
+            interval.scale = float(np.median(np.maximum(difficulty, interval.floor)))
+            absolute = absolute / interval._ratio(difficulty)
         overall = cls._finite_sample_quantile(absolute, coverage)
         edges = np.quantile(predicted, np.linspace(0, 1, _N_RT_BINS + 1))
         edges[0], edges[-1] = -np.inf, np.inf
@@ -277,12 +304,23 @@ class _ConformalInterval:
             mask = bins == b
             if int(mask.sum()) >= _MIN_RESIDUALS_PER_BIN:
                 half_width[b] = cls._finite_sample_quantile(absolute[mask], coverage)
-        return cls(coverage=coverage, edges=edges, half_width=half_width)
+        interval.edges, interval.half_width = edges, half_width
+        return interval
 
-    def widths(self, predicted: np.ndarray) -> np.ndarray:
+    def widths(
+        self, predicted: np.ndarray, difficulty: np.ndarray | None = None
+    ) -> np.ndarray:
         """Interval half-width for each prediction."""
         bins = np.clip(np.searchsorted(self.edges, predicted, side="right") - 1, 0, _N_RT_BINS - 1)
-        return self.half_width[bins]
+        widths = self.half_width[bins]
+        if self.scale is None:
+            return widths
+        if difficulty is None:
+            raise ValueError(
+                "This interval was fitted with a per-peptide difficulty score, so it needs "
+                "one to produce widths."
+            )
+        return widths * self._ratio(difficulty)
 
 
 def _crossfit_residuals(
@@ -290,11 +328,12 @@ def _crossfit_residuals(
     matrix_reference: np.ndarray,
     calibration_template: Calibration,
     seed: int = 0,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """
     Honest reference residuals: each fold predicted by a calibration fitted without it.
 
-    Returns (cross-fitted predictions, residuals), aligned with the reference order. The
+    Returns (cross-fitted predictions, residuals, difficulty scores), aligned with the
+    reference order; the scores are None when the calibration reports no disagreement. The
     template is re-instantiated per fold with ``type(...)()`` semantics via a deep copy of its
     construction parameters, so a fitted calibration is never reused across folds.
     """
@@ -304,6 +343,7 @@ def _crossfit_residuals(
     order = rng.permutation(len(y_reference))
     folds = np.array_split(order, min(_N_FOLDS, max(2, len(y_reference) // 25)))
     predicted = np.empty(len(y_reference))
+    difficulty: np.ndarray | None = np.empty(len(y_reference))
     for i, fold in enumerate(folds):
         train = np.concatenate([f for j, f in enumerate(folds) if j != i])
         calibration = copy.deepcopy(calibration_template)
@@ -321,7 +361,12 @@ def _crossfit_residuals(
                 calibration.transform(matrix_reference[fold][:, head].astype(np.float32)),
                 dtype=float,
             )
-    return predicted, y_reference - predicted
+        fold_difficulty = calibration.disagreement(matrix_reference[fold])
+        if difficulty is None or fold_difficulty is None:
+            difficulty = None
+        else:
+            difficulty[fold] = np.asarray(fold_difficulty, dtype=float)
+    return predicted, y_reference - predicted, difficulty
 
 
 def prediction_report(
@@ -331,6 +376,7 @@ def prediction_report(
     calibration: Calibration | None = None,
     coverage: float = 0.90,
     training_index: TrainingIndex | PathLike | str | None = None,
+    per_peptide_width: bool = True,
     predict_kwargs: dict | None = None,
 ) -> pd.DataFrame:
     """
@@ -355,6 +401,12 @@ def prediction_report(
     training_index
         A :class:`TrainingIndex` or a path to one. Without it, the columns about the training
         corpus are omitted and the report is limited to the reference.
+    per_peptide_width
+        Scale each interval by how far the combined setup heads lie apart for that peptide, so
+        two peptides predicted at the same retention time can get different intervals. Ignored
+        with a calibration that reports no such disagreement, such as
+        :class:`SplineTransformerCalibration`, where the width depends on the predicted
+        retention time alone.
     predict_kwargs
         Passed to the prediction function (``{"device": "cpu"}`` and the like).
 
@@ -413,9 +465,14 @@ def prediction_report(
         )
         selected_heads = np.array([head], dtype=int)
 
-    cross_predicted, residuals = _crossfit_residuals(y_reference, matrix_reference, template)
-    interval = _ConformalInterval.fit(cross_predicted, residuals, coverage)
-    half_width = interval.widths(np.asarray(predicted, dtype=float))
+    cross_predicted, residuals, cross_difficulty = _crossfit_residuals(
+        y_reference, matrix_reference, template
+    )
+    query_difficulty = calibration.disagreement(matrix_query) if per_peptide_width else None
+    if cross_difficulty is None or query_difficulty is None:
+        cross_difficulty = query_difficulty = None
+    interval = _ConformalInterval.fit(cross_predicted, residuals, coverage, cross_difficulty)
+    half_width = interval.widths(np.asarray(predicted, dtype=float), query_difficulty)
 
     # membership and novelty against the reference
     reference_keys = {canonical_peptidoform_key(psm.peptidoform) for psm in reference.psm_list}

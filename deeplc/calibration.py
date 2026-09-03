@@ -46,6 +46,16 @@ class Calibration(ABC):
         """Transform source values into the calibrated target space."""
         ...
 
+    def disagreement(self, source: np.ndarray) -> np.ndarray | None:  # noqa: ARG002
+        """
+        Per-input uncertainty score, or None when the calibration has none.
+
+        A calibration that combines several estimates of the same retention time can report
+        how far they lie apart for each input, which :func:`deeplc.report.prediction_report`
+        uses to scale its prediction intervals per peptide.
+        """
+        return None
+
 
 class IdentityCalibration(Calibration):
     """No calibration; returns inputs unchanged."""
@@ -444,13 +454,40 @@ class MultiHeadRidgeCalibration(Calibration):
             )
         if source.shape[0] == 0:
             return np.array([])
-        calibrated = np.column_stack(
+        return np.asarray(self._ridge.predict(self._calibrated_columns(source)), dtype=np.float64)
+
+    def _calibrated_columns(self, source: np.ndarray) -> np.ndarray:
+        """Each selected head's own estimate of the retention time, in the reference's unit."""
+        head_idx = cast(np.ndarray, self._head_idx)
+        return np.column_stack(
             [
                 np.asarray(cal.transform(source[:, head].astype(np.float32)), dtype=np.float64)
                 for cal, head in zip(self._head_calibrations, head_idx, strict=True)
             ]
         )
-        return np.asarray(self._ridge.predict(calibrated), dtype=np.float64)
+
+    def disagreement(self, source: np.ndarray) -> np.ndarray | None:
+        """
+        How far the combined setup heads lie apart for each input, in the reference's unit.
+
+        Every selected head estimates the retention time of the same peptide, so the spread of
+        those estimates, weighted by the ridge weight each head received, is an uncertainty
+        that varies from peptide to peptide rather than only along the gradient. Returns None
+        while the calibration is unfitted or combines a single head, which carries no spread.
+        """
+        if not self.is_fitted:
+            return None
+        columns = np.asarray(source, dtype=np.float64)
+        if columns.ndim == 1:
+            columns = columns[:, None]
+        if columns.shape[0] == 0 or len(cast(np.ndarray, self._head_idx)) < 2:
+            return None
+        weights = np.abs(np.asarray(self._ridge.coef_, dtype=np.float64).ravel())
+        total = weights.sum()
+        weights = weights / total if total > 0 else np.full(len(weights), 1 / len(weights))
+        estimates = self._calibrated_columns(columns)
+        mean = estimates @ weights
+        return np.sqrt(((estimates - mean[:, None]) ** 2) @ weights)
 
 
 def _rank_heads_by_correlation(source: np.ndarray, target: np.ndarray) -> np.ndarray:

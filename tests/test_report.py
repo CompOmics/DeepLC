@@ -95,6 +95,35 @@ def test_interval_is_wider_where_residuals_are_wider():
     assert interval.widths(np.array([90.0]))[0] > 2 * interval.widths(np.array([10.0]))[0]
 
 
+def test_difficulty_score_gives_each_input_its_own_width():
+    """With a per-input score, two inputs at the same predicted RT get different widths."""
+    rng = np.random.default_rng(3)
+    predicted = rng.uniform(0, 100, 3000)
+    difficulty = rng.uniform(0.5, 4.0, 3000)
+    residuals = rng.normal(0, difficulty, 3000)
+    interval = _ConformalInterval.fit(predicted, residuals, 0.90, difficulty)
+
+    widths = interval.widths(np.full(2, 50.0), np.array([0.6, 3.5]))
+    assert widths[1] > 2 * widths[0]
+
+    new_predicted = rng.uniform(0, 100, 3000)
+    new_difficulty = rng.uniform(0.5, 4.0, 3000)
+    covered = np.abs(rng.normal(0, new_difficulty, 3000)) <= interval.widths(
+        new_predicted, new_difficulty
+    )
+    assert 0.87 <= covered.mean() <= 0.94
+
+
+def test_difficulty_scaled_interval_needs_a_score_to_predict_with():
+    """An interval fitted on a difficulty score cannot silently drop it."""
+    rng = np.random.default_rng(4)
+    predicted = rng.uniform(0, 100, 500)
+    difficulty = rng.uniform(1, 2, 500)
+    interval = _ConformalInterval.fit(predicted, rng.normal(0, 1, 500), 0.90, difficulty)
+    with pytest.raises(ValueError, match="difficulty"):
+        interval.widths(predicted)
+
+
 def test_thin_bins_fall_back_to_the_global_quantile():
     """Too few residuals per bin means one global width, not five noisy ones."""
     rng = np.random.default_rng(2)
@@ -267,6 +296,46 @@ def test_report_rejects_a_prefitted_calibration():
             calibration=calibration,
             predict_kwargs={"device": "cpu"},
         )
+
+
+def test_report_widths_vary_per_peptide_with_a_multihead_calibration():
+    """Peptides get their own interval; per_peptide_width=False restores the RT-only widths."""
+    from deeplc.calibration import MultiHeadRidgeCalibration
+
+    queries = PSMList(
+        psm_list=[PSM(spectrum_id=str(i), peptidoform=f"{seq}/2")
+                  for i, seq in enumerate(_PEPTIDES)]
+    )
+    per_peptide, per_bin = (
+        prediction_report(
+            queries,
+            psm_list_reference=_reference(),
+            calibration=MultiHeadRidgeCalibration(n_heads=8),
+            per_peptide_width=flag,
+            predict_kwargs={"device": "cpu"},
+        )
+        for flag in (True, False)
+    )
+    widths = (per_peptide["ci_upper"] - per_peptide["ci_lower"]).round(9)
+    binned_widths = (per_bin["ci_upper"] - per_bin["ci_lower"]).round(9)
+    assert widths.nunique() > binned_widths.nunique()
+    assert (widths > 0).all()
+
+
+def test_report_falls_back_to_rt_only_widths_without_disagreement():
+    """A single-head calibration has no per-peptide signal, so the flag changes nothing."""
+    queries = PSMList(
+        psm_list=[PSM(spectrum_id=str(i), peptidoform=f"{seq}/2")
+                  for i, seq in enumerate(_PEPTIDES)]
+    )
+    report = prediction_report(
+        queries,
+        psm_list_reference=_reference(),
+        per_peptide_width=True,
+        predict_kwargs={"device": "cpu"},
+    )
+    widths = (report["ci_upper"] - report["ci_lower"]).round(9)
+    assert widths.nunique() <= 5
 
 
 def test_report_with_multihead_calibration_lists_every_selected_head(tiny_index: TrainingIndex):

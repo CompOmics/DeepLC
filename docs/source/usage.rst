@@ -96,6 +96,12 @@ holds on peptides exchangeable with the reference, without retraining and regard
 model. Pass ``calibration=MultiHeadRidgeCalibration()`` to combine setups; the membership
 column then covers every selected head.
 
+The width of that interval depends on the predicted retention time and, with a multi-head
+calibration, on the peptide itself: the combined setup heads each estimate the same retention
+time, and how far those estimates lie apart is an uncertainty that varies per peptide. Two
+peptides predicted at the same retention time therefore get different intervals. Pass
+``per_peptide_width=False`` for widths that depend on the predicted retention time alone.
+
 With a training index (built from the multitask training corpus and distributed separately),
 three more columns appear: ``in_training`` (exact peptidoform match anywhere in the corpus),
 ``in_selected_heads_training`` (match within the setups the calibration selected) and
