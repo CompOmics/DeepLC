@@ -108,6 +108,37 @@ def test_never_fits_more_weights_than_half_the_reference():
     assert len(calibration._head_calibrations) <= 5
 
 
+def test_disagreement_is_per_input_and_zero_only_when_heads_agree():
+    """The spread of the calibrated heads varies from input to input."""
+    target, source = _synthetic(n_heads=12)
+    calibration = MultiHeadRidgeCalibration(n_heads=6)
+    assert calibration.disagreement(source) is None  # unfitted
+    calibration.fit(target=target, source=source)
+
+    spread = calibration.disagreement(source)
+    assert spread.shape == target.shape
+    assert (spread >= 0).all()
+    assert np.unique(spread.round(9)).size > len(target) // 2
+
+    # heads that are affine views of one latent retention time calibrate onto each other, so
+    # after calibration they agree and the spread collapses
+    rng = np.random.default_rng(0)
+    latent = rng.uniform(0, 100, len(target))
+    scales, shifts = rng.uniform(0.5, 2, 12), rng.uniform(-20, 20, 12)
+    agreeing = latent[:, None] * scales + shifts
+    agreed = MultiHeadRidgeCalibration(n_heads=6)
+    agreed.fit(target=latent, source=agreeing)
+    assert agreed.disagreement(agreeing).mean() < 0.05 * spread.mean()
+
+
+def test_single_head_combination_reports_no_disagreement():
+    """One head carries no spread, so there is nothing to scale an interval by."""
+    target, source = _synthetic(n_heads=1)
+    calibration = MultiHeadRidgeCalibration()
+    calibration.fit(target=target, source=source[:, 0])
+    assert calibration.disagreement(source[:, 0]) is None
+
+
 def test_rejects_a_nonsensical_head_count():
     """Zero heads cannot calibrate anything."""
     with pytest.raises(ValueError, match="at least 1"):
