@@ -19,7 +19,8 @@ from rich.progress import (
 )
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from deeplc._architecture import DeepLCModel, FlexCNNMultitaskModel
+from deeplc._architecture import DeepLCModel, FactorHead, FlexCNNMultitaskModel
+from deeplc._factored import FactoredPredictionMatrix
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
@@ -242,6 +243,21 @@ def train(
     return model
 
 
+def supports_factored(model: torch.nn.Module) -> bool:
+    """
+    Whether this model's output can be kept as low-rank factors instead of a matrix.
+
+    True only for a multitask model that still has its ``FactorHead``. A head fine-tuned
+    onto one setup returns that column alone, so there is nothing to factor.
+    """
+    head = getattr(model, "head", None)
+    return (
+        hasattr(model, "project")
+        and isinstance(head, FactorHead)
+        and not getattr(head, "has_new_task", False)
+    )
+
+
 def _output_hint(n_rows: int, columns: int, itemsize: int) -> str:
     """Explain an output that does not fit, and how to make it smaller."""
     return (
@@ -280,9 +296,16 @@ def predict(
     show_progress: bool = True,
     task_idx: Sequence[int] | None = None,
     length_buckets: bool = True,
-) -> torch.Tensor:
+    factored: bool = False,
+) -> torch.Tensor | FactoredPredictionMatrix:
     """
     Predict using the model for the given dataset.
+
+    ``factored`` returns a :class:`~deeplc._factored.FactoredPredictionMatrix` rather than
+    the matrix itself, for the multitask models whose head is low rank. It indexes the same
+    way but holds ``(n_peptides, rank)`` instead of ``(n_peptides, n_tasks)``, which at rank
+    64 and 6,543 setups is 102 times less memory. Ignored when the model cannot be factored
+    or when ``task_idx`` already narrows the output.
 
     ``length_buckets`` runs length-sorted chunks in a window that fits them rather than
     padding every peptide to the model's full window; see :func:`_length_buckets`. It is
@@ -298,6 +321,8 @@ def predict(
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
 
+    as_factors = factored and task_idx is None and supports_factored(model)
+
     buckets = _length_buckets(model, data, batch_size) if length_buckets else None
     if buckets is None:
         predictions = _predict_epoch(
@@ -308,8 +333,10 @@ def predict(
             num_workers=num_workers,
             show_progress=show_progress,
             task_idx=task_idx,
+            project=as_factors,
         )
-        return predictions.cpu().detach()
+        result = predictions.cpu().detach()
+        return _as_factored(model, result) if as_factors else result
 
     out: torch.Tensor | None = None
     for indices, subset in buckets:
@@ -321,13 +348,26 @@ def predict(
             num_workers=num_workers,
             show_progress=show_progress,
             task_idx=task_idx,
+            project=as_factors,
         ).cpu()
         if out is None:
             out = _allocate_output(len(data), tuple(part.shape[1:]), part.dtype)
         out[indices] = part
     if out is None:
         raise ValueError("Dataset is empty — nothing to predict.")
-    return out.detach()
+    out = out.detach()
+    return _as_factored(model, out) if as_factors else out
+
+
+def _as_factored(model: torch.nn.Module, projections: torch.Tensor) -> FactoredPredictionMatrix:
+    """Pair the projections with the head parameters that expand them."""
+    head = model.head
+    return FactoredPredictionMatrix(
+        projections.numpy(),
+        head.embedding.detach().cpu().numpy(),
+        head.scale.detach().cpu().numpy(),
+        head.shift.detach().cpu().numpy(),
+    )
 
 
 #: Widest spread of peptide lengths allowed inside one prediction chunk. Small enough that
@@ -503,8 +543,9 @@ def _predict_epoch(
     num_workers: int = 0,
     show_progress: bool = False,
     task_idx: Sequence[int] | None = None,
+    project: bool = False,
 ) -> torch.Tensor:
-    """Predict using the model for one epoch."""
+    """Predict using the model for one epoch, or project into the head's rank if asked."""
     model.eval()
     selected = None
     if task_idx is not None and supports_task_subset(model):
@@ -523,7 +564,12 @@ def _predict_epoch(
             total=total,
         ):
             features = [feature_tensor.to(device) for feature_tensor in features]
-            outputs = model(*features) if selected is None else model(*features, task_idx=selected)
+            if project:
+                outputs = model.project(*features)
+            else:
+                outputs = (
+                    model(*features) if selected is None else model(*features, task_idx=selected)
+                )
             batch = outputs.cpu()
             # The column count is only known once a batch has been through the model, so the
             # output is allocated on the first one and filled from there. A dataset that

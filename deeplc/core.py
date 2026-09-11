@@ -12,6 +12,7 @@ from psm_utils import PSM, Peptidoform, PSMList
 from torch.utils.data import DataLoader
 
 from deeplc import _model_ops
+from deeplc._factored import FactoredPredictionMatrix
 from deeplc._reference_selection import deduplicate_psms, select_reference_psms
 from deeplc.calibration import (
     Calibration,
@@ -76,7 +77,12 @@ def predict(
     model
         Trained model or path to model file. If None, the default DeepLC model is used.
     predict_kwargs
-        Additional keyword arguments to pass to the prediction function.
+        Additional keyword arguments to pass to the prediction function. Pass
+        ``{"factored": True}`` alongside ``return_matrix=True`` to receive a
+        :class:`~deeplc._factored.FactoredPredictionMatrix` instead of the matrix itself: it
+        indexes the same way but holds the head's low-rank factors, which for the bundled
+        multitask model is 102 times less memory. It is not an ``ndarray``, so it suits a
+        caller that slices the matrix rather than one that runs array methods over it.
     return_matrix
         If True, return the full prediction matrix of shape ``(n, n_heads)`` when using a
         multitask model. If False (default), return a 1D array of shape ``(n,)`` for the
@@ -122,7 +128,8 @@ def predict(
             **_feature_kwargs_from_spec(feature_spec),
         ),
         **kwargs,
-    ).numpy()
+    )
+    result = result if isinstance(result, FactoredPredictionMatrix) else result.numpy()
     if not return_matrix:
         return result[:, 0 if "task_idx" in kwargs else _default_task_idx(loaded_model)]
     return result
