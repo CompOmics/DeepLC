@@ -242,6 +242,36 @@ def train(
     return model
 
 
+def _output_hint(n_rows: int, columns: int, itemsize: int) -> str:
+    """Explain an output that does not fit, and how to make it smaller."""
+    return (
+        f"Predicting would need an output of {n_rows:,} x {columns:,} values "
+        f"({n_rows * columns * itemsize / 2**30:.1f} GiB). A multitask model returns one "
+        f"column per LC setup, so ask for the setups you need with "
+        f"predict_kwargs={{'task_idx': [...]}}, or predict in smaller groups of peptides."
+    )
+
+
+def _allocate_output(
+    n_rows: int, tail: tuple[int, ...], dtype: torch.dtype
+) -> torch.Tensor:
+    """
+    Allocate the whole prediction output up front.
+
+    Two reasons not to collect batches in a list and concatenate at the end. The
+    concatenation needs the result twice over, once in the parts and once in the copy, so
+    the peak is double what the caller ends up holding. And it only fails after every
+    batch has been predicted, which on a large run means the work is lost. Allocating
+    first fails immediately and holds one copy.
+    """
+    try:
+        return torch.empty((n_rows, *tail), dtype=dtype)
+    except (RuntimeError, MemoryError) as exc:
+        columns = int(np.prod(tail)) if tail else 1
+        itemsize = torch.empty(0, dtype=dtype).element_size()
+        raise MemoryError(_output_hint(n_rows, columns, itemsize)) from exc
+
+
 def predict(
     model: torch.nn.Module | PathLike | str | None,
     data: Dataset,
@@ -295,7 +325,7 @@ def predict(
             task_idx=task_idx,
         ).cpu()
         if out is None:
-            out = torch.empty((len(data), part.shape[1]), dtype=part.dtype)
+            out = _allocate_output(len(data), tuple(part.shape[1:]), part.dtype)
         out[indices] = part
     if out is None:
         raise ValueError("Dataset is empty — nothing to predict.")
@@ -481,8 +511,11 @@ def _predict_epoch(
     selected = None
     if task_idx is not None and supports_task_subset(model):
         selected = torch.as_tensor(list(task_idx), dtype=torch.long, device=device)
-    predictions = []
-    total = int(np.ceil(len(data) / batch_size)) if hasattr(data, "__len__") else None
+    sized = hasattr(data, "__len__")
+    total = int(np.ceil(len(data) / batch_size)) if sized else None
+    out: torch.Tensor | None = None
+    parts: list[torch.Tensor] = []
+    filled = 0
     with torch.no_grad():
         for features in track(
             _feature_batches(data, batch_size, num_workers),
@@ -493,10 +526,20 @@ def _predict_epoch(
         ):
             features = [feature_tensor.to(device) for feature_tensor in features]
             outputs = model(*features) if selected is None else model(*features, task_idx=selected)
-            predictions.append(outputs.cpu())
-    if not predictions:
+            batch = outputs.cpu()
+            # The column count is only known once a batch has been through the model, so the
+            # output is allocated on the first one and filled from there. A dataset that
+            # cannot report its length falls back to collecting the batches.
+            if sized:
+                if out is None:
+                    out = _allocate_output(len(data), tuple(batch.shape[1:]), batch.dtype)
+                out[filled : filled + len(batch)] = batch
+            else:
+                parts.append(batch)
+            filled += len(batch)
+    if filled == 0:
         raise ValueError("Dataset is empty — nothing to predict.")
-    return torch.cat(predictions, dim=0)
+    return out[:filled] if out is not None else torch.cat(parts, dim=0)
 
 
 def _create_progress(disable: bool = False) -> Progress:

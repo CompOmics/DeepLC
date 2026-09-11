@@ -81,3 +81,45 @@ def test_load_multitask_model_without_prior_shim():
     assert out.ndim == 2
     assert out.shape[0] == 2
     assert out.shape[1] > 1  # multiple heads
+
+
+def test_predict_output_matches_batchwise_concatenation():
+    """The preallocated output must equal what concatenating the batches produced."""
+    model, dataset = DeepLCModel(n_heads=1), _TinyDeepLCDataset(length=37)
+    batched = _model_ops.predict(
+        model, dataset, device="cpu", batch_size=8, show_progress=False, length_buckets=False
+    )
+    single = _model_ops.predict(
+        model, dataset, device="cpu", batch_size=1000, show_progress=False, length_buckets=False
+    )
+    assert batched.shape == single.shape == (37, 1)
+    torch.testing.assert_close(batched, single)
+
+
+def test_allocate_output_reports_the_size_when_it_does_not_fit():
+    """An output that cannot be allocated says how large it was and how to shrink it."""
+    with pytest.raises(MemoryError, match=r"task_idx"):
+        _model_ops._allocate_output(2**40, (6543,), torch.float32)
+
+
+def test_predict_propagates_the_allocation_failure(monkeypatch):
+    """The helper's message reaches the caller of predict() rather than a raw allocator error."""
+    def _refuse(*args, **kwargs):
+        raise MemoryError(_model_ops._output_hint(2**40, 6543, 4))
+
+    monkeypatch.setattr(_model_ops, "_allocate_output", _refuse)
+    with pytest.raises(MemoryError, match=r"task_idx"):
+        _model_ops.predict(
+            model=DeepLCModel(n_heads=1),
+            data=_TinyDeepLCDataset(length=4),
+            device="cpu",
+            show_progress=False,
+            length_buckets=False,
+        )
+
+
+def test_output_hint_mentions_the_size_in_gigabytes():
+    """The hint names the size that failed, so a log line is enough to diagnose it."""
+    hint = _model_ops._output_hint(2_587_932, 6543, 4)
+    assert "63.1 GiB" in hint
+    assert "task_idx" in hint
