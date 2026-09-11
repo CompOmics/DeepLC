@@ -13,19 +13,27 @@ from deeplc.core import DEFAULT_MODEL
 
 PREDICT_KWARGS = {"device": "cpu", "show_progress": False}
 PEPTIDES = [
-    "PEPTIDEK", "LVVVGAGGVGK", "GPNGPWSVMK", "YPLQLAELLK", "VVEEAVDLFK",
-    "AAELALR", "SLIDLLQK", "ELVISLIVESK", "AAAAAAAAAAK", "WWWWK",
+    "PEPTIDEK",
+    "LVVVGAGGVGK",
+    "GPNGPWSVMK",
+    "YPLQLAELLK",
+    "VVEEAVDLFK",
+    "AAELALR",
+    "SLIDLLQK",
+    "ELVISLIVESK",
+    "AAAAAAAAAAK",
+    "WWWWK",
 ]
 
 
 def _matrices():
     """Return the same predictions as factors and as a dense matrix."""
-    lazy = core.predict(
-        PEPTIDES, model=None, predict_kwargs={**PREDICT_KWARGS, "factored": True},
-        return_matrix=True,
-    )
+    lazy = core.predict(PEPTIDES, model=None, predict_kwargs=PREDICT_KWARGS, return_matrix=True)
     dense = core.predict(
-        PEPTIDES, model=None, predict_kwargs=PREDICT_KWARGS, return_matrix=True
+        PEPTIDES,
+        model=None,
+        predict_kwargs={**PREDICT_KWARGS, "factored": False},
+        return_matrix=True,
     )
     return lazy, dense
 
@@ -36,8 +44,8 @@ requires_bundled_model = pytest.mark.skipif(
 
 
 @requires_bundled_model
-def test_factored_is_returned_only_when_asked_for():
-    """The default stays an ndarray; the factors come only on request."""
+def test_factored_is_the_default_and_dense_is_available():
+    """A multitask matrix comes back factored; `factored: False` forces the dense one."""
     lazy, dense = _matrices()
     assert isinstance(lazy, FactoredPredictionMatrix)
     assert isinstance(dense, np.ndarray)
@@ -67,6 +75,26 @@ def test_every_indexing_form_matches_the_dense_matrix(index):
     from_dense = np.asarray(dense[index])
     assert from_factors.shape == from_dense.shape
     np.testing.assert_allclose(from_factors, from_dense, atol=1e-3)
+
+
+@requires_bundled_model
+def test_selecting_rows_stays_factored():
+    """A run's rows must remain factors, or a calibration would build every head for them."""
+    lazy, dense = _matrices()
+    rows = np.array([0, 3, 7])
+    view = lazy[rows]
+    assert isinstance(view, FactoredPredictionMatrix)
+    assert view.shape == (len(rows), lazy.shape[1])
+    np.testing.assert_allclose(np.asarray(view), dense[rows], atol=1e-3)
+
+
+@requires_bundled_model
+def test_array_methods_fall_back_to_the_dense_matrix():
+    """Reductions have no factored form, so they must still give the same answer."""
+    lazy, dense = _matrices()
+    assert np.isfinite(lazy).all()
+    np.testing.assert_allclose(lazy.min(), dense.min(), atol=1e-3)
+    np.testing.assert_allclose(lazy.mean(), dense.mean(), atol=1e-3)
 
 
 @requires_bundled_model

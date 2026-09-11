@@ -78,11 +78,10 @@ def predict(
         Trained model or path to model file. If None, the default DeepLC model is used.
     predict_kwargs
         Additional keyword arguments to pass to the prediction function. Pass
-        ``{"factored": True}`` alongside ``return_matrix=True`` to receive a
-        :class:`~deeplc._factored.FactoredPredictionMatrix` instead of the matrix itself: it
-        indexes the same way but holds the head's low-rank factors, which for the bundled
-        multitask model is 102 times less memory. It is not an ``ndarray``, so it suits a
-        caller that slices the matrix rather than one that runs array methods over it.
+        ``{"factored": False}`` to force a dense ``ndarray`` from ``return_matrix=True``.
+        The default hands back a
+        :class:`~deeplc._factored.FactoredPredictionMatrix`, which holds the head's low-rank
+        factors and indexes identically at a fraction of the memory.
     return_matrix
         If True, return the full prediction matrix of shape ``(n, n_heads)`` when using a
         multitask model. If False (default), return a 1D array of shape ``(n,)`` for the
@@ -119,6 +118,15 @@ def predict(
         and _model_ops.supports_task_subset(loaded_model)
     ):
         kwargs["task_idx"] = [_default_task_idx(loaded_model)]
+
+    # The matrix a multitask model returns is its head's low-rank factors expanded out, so the
+    # factors are handed back instead. They report the same shape and index the same way, but
+    # hold (n_peptides, rank) rather than (n_peptides, n_tasks): at rank 64 and 6,543 setups
+    # that is 102 times less, the difference between 0.6 GiB and 63 GiB on a 2.6 M peptide run.
+    # Anything the factors cannot answer falls through to the dense matrix, so a caller that
+    # reduces over the result rather than slicing it behaves exactly as before.
+    if return_matrix and "task_idx" not in kwargs and _model_ops.supports_factored(loaded_model):
+        kwargs.setdefault("factored", True)
 
     result = _model_ops.predict(
         model=loaded_model,

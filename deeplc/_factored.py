@@ -16,7 +16,7 @@ class FactoredPredictionMatrix:
 
     That head is low rank by construction::
 
-        pred[:, j] = (proj(trunk) . embedding[j]) * scale[j] + shift[j]
+        pred[:, j] = (proj(trunk).embedding[j]) * scale[j] + shift[j]
 
     so the whole matrix is determined by ``proj(trunk)``, which is ``(n_peptides, rank)``,
     together with the head's own parameters. At rank 64 and 6,543 setups that is 102 times
@@ -112,22 +112,29 @@ class FactoredPredictionMatrix:
             shift = np.atleast_1d(self._shift[columns])
         return (projections @ embedding.T) * scale + shift
 
+    def _select_rows(self, rows) -> FactoredPredictionMatrix:
+        """Narrow to a subset of peptides, still as factors."""
+        return FactoredPredictionMatrix(
+            self._projections[rows], self._embedding, self._scale, self._shift
+        )
+
     def __getitem__(self, key):
         """
         Index as the dense matrix would, evaluating only the block that is asked for.
 
-        A scalar in either position drops that axis, as numpy does, so ``m[rows, head]`` is
-        one dimensional and ``m[i, j]`` is a scalar.
+        Selecting rows alone gives another factored matrix rather than a dense one. That is
+        what lets a caller narrow to one run's peptides and still hand the result to a
+        calibration, which reads a few dozen of the thousands of heads: nothing in that path
+        ever builds the wide matrix. A scalar in either position drops that axis, as numpy
+        does, so ``m[rows, head]`` is one dimensional and ``m[i, j]`` is a scalar.
         """
         rows, columns = key if isinstance(key, tuple) else (key, None)
         if isinstance(rows, slice) and rows == slice(None):
             rows = None
-        row_scalar = np.isscalar(rows) or (
-            isinstance(rows, np.generic) and np.ndim(rows) == 0
-        )
-        column_scalar = columns is not None and (
-            np.isscalar(columns) or (isinstance(columns, np.generic) and np.ndim(columns) == 0)
-        )
+        if columns is None and rows is not None and not _is_scalar(rows):
+            return self._select_rows(rows)
+        row_scalar = _is_scalar(rows)
+        column_scalar = columns is not None and _is_scalar(columns)
         block = self._evaluate(rows, columns)
         if row_scalar:
             block = block[0]
@@ -139,6 +146,18 @@ class FactoredPredictionMatrix:
         dense = self._evaluate(None, None)
         return dense if dtype is None else dense.astype(dtype)
 
+    def __getattr__(self, name: str):
+        """
+        Fall back to the dense matrix for anything not answered from the factors.
+
+        Reductions such as ``.min()`` and ``.mean()`` have no cheap factored form, so code
+        that calls them gets the same answer it always did, at the same cost it always had.
+        Only indexing, which is the path that matters for a wide matrix, stays lazy.
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(np.asarray(self), name)
+
     def __repr__(self) -> str:
         """Show the shape it stands for and what it actually costs."""
         rows, columns = self.shape
@@ -146,6 +165,11 @@ class FactoredPredictionMatrix:
             f"{type(self).__name__}(shape=({rows}, {columns}), rank={self.rank}, "
             f"{_human(self.nbytes)} held for a {_human(self.dense_nbytes)} matrix)"
         )
+
+
+def _is_scalar(index) -> bool:
+    """Whether an index selects one element rather than a subset."""
+    return np.isscalar(index) or (isinstance(index, np.generic) and np.ndim(index) == 0)
 
 
 def _human(n: int) -> str:
