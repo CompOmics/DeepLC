@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-09-11
+
+### Changed
+
+- `predict(..., return_matrix=True)` on a multitask model now returns a
+  `FactoredPredictionMatrix` instead of a dense array. `FactorHead` ends with
+  `proj(trunk) @ embedding.T * scale + shift`, so the `(n_peptides, n_tasks)` matrix is
+  determined by `(n_peptides, rank)`: at rank 64 and 6,543 setups that is 102 times less
+  memory, 0.6 GiB instead of 63 GiB for 2.6 million peptides. It reports the same shape and
+  indexes the same way, selecting rows alone gives another factored matrix, and anything it
+  cannot answer from the factors falls through to the dense matrix, so callers that reduce
+  over the result rather than slicing it are unaffected. Pass
+  `predict_kwargs={"factored": False}` for the dense array.
+- `MultiHeadCalibration.fit` no longer expands a lazy source. Head ranking already walked the
+  heads in blocks and every later step reads single columns, so a reference of every
+  confidently identified PSM in a large search no longer has to fit in memory at full width.
+  Block size is now chosen from the row count, holding the peak near 64 MiB whether the
+  reference has a thousand rows or a million.
+
+### Fixed
+
+- Predicting no longer collects every batch in a list and concatenates at the end, which
+  needed the result twice over and only failed once all the work was done. The output is
+  allocated once and filled in place, and an output that does not fit reports its size and
+  points at `task_idx` rather than surfacing a bare allocator failure.
+
 ## [4.4.0] - 2026-09-09
 
 ### Added

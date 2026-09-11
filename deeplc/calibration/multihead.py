@@ -119,15 +119,22 @@ class _SingleHeadCalibration(MultiHeadCalibration):
         # The matrix arrives from the model as float32 and is (n, 6,543) wide; promoting it
         # here doubled a 276 MB reference to 552 MB for no gain, since every head's column is
         # cast to float32 again for its spline and the ranking accumulates in float64 itself.
-        source = np.asarray(source)
-        if source.ndim == 1:
-            source = source[:, None]
+        #
+        # A lazy source is left lazy. Ranking already walks the heads in blocks and every step
+        # after it reads single columns, so nothing here needs the matrix whole; forcing it
+        # would put the reference's full width in memory for no purpose. A reference of every
+        # confidently identified PSM in a large search is exactly where that bites.
+        source = as_head_matrix(source)
+        if not getattr(source, "is_head_source", False):
+            source = np.asarray(source)
+            if source.ndim == 1:
+                source = source[:, None]
         target = np.asarray(target, dtype=np.float64).ravel()
         if source.shape[0] != target.shape[0]:
             raise CalibrationError(
                 f"source has {source.shape[0]} rows and target {target.shape[0]}"
             )
-        finite = np.isfinite(target) & np.isfinite(source).all(axis=1)
+        finite = np.isfinite(target) & _finite_rows(source)
         if int(finite.sum()) < 3:
             raise CalibrationError("Fewer than three reference points with finite values.")
         source, target = source[finite], target[finite]
@@ -267,15 +274,22 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         # The matrix arrives from the model as float32 and is (n, 6,543) wide; promoting it
         # here doubled a 276 MB reference to 552 MB for no gain, since every head's column is
         # cast to float32 again for its spline and the ranking accumulates in float64 itself.
-        source = np.asarray(source)
-        if source.ndim == 1:
-            source = source[:, None]
+        #
+        # A lazy source is left lazy. Ranking already walks the heads in blocks and every step
+        # after it reads single columns, so nothing here needs the matrix whole; forcing it
+        # would put the reference's full width in memory for no purpose. A reference of every
+        # confidently identified PSM in a large search is exactly where that bites.
+        source = as_head_matrix(source)
+        if not getattr(source, "is_head_source", False):
+            source = np.asarray(source)
+            if source.ndim == 1:
+                source = source[:, None]
         target = np.asarray(target, dtype=np.float64).ravel()
         if source.shape[0] != target.shape[0]:
             raise CalibrationError(
                 f"source has {source.shape[0]} rows and target {target.shape[0]}"
             )
-        finite = np.isfinite(target) & np.isfinite(source).all(axis=1)
+        finite = np.isfinite(target) & _finite_rows(source)
         if int(finite.sum()) < 3:
             raise CalibrationError("Fewer than three reference points with finite values.")
         source, target = source[finite], target[finite]
@@ -424,6 +438,36 @@ def upgrade_calibration(calibration: Calibration | MultiHeadCalibration) -> Mult
     return MultiHeadSplineCalibration()
 
 
+#: Largest block of a lazy source held at once, in bytes. Blocks are sized from the row count
+#: so the peak does not grow with the reference: a reference of a million PSMs reads narrower
+#: blocks than one of a thousand, and both stay near this figure.
+_BLOCK_BYTES = 64 * 2**20
+
+
+def _head_block(n_rows: int, n_heads: int, itemsize: int = 8) -> int:
+    """How many heads to read at once so a block stays near :data:`_BLOCK_BYTES`."""
+    if n_rows <= 0:
+        return n_heads
+    return int(max(1, min(n_heads, _BLOCK_BYTES // max(1, n_rows * itemsize))))
+
+
+def _finite_rows(source) -> np.ndarray:
+    """
+    Rows whose every head is finite, without holding more than a block of heads at once.
+
+    A dense source is checked in one pass as before. A lazy one is walked in the same blocks
+    the ranking uses, so the widest thing in memory is a slice rather than the matrix.
+    """
+    if not getattr(source, "is_head_source", False):
+        return np.isfinite(source).all(axis=1)
+    n_rows, n_heads = source.shape
+    finite = np.ones(n_rows, dtype=bool)
+    block = _head_block(n_rows, n_heads, itemsize=4)
+    for start in range(0, n_heads, block):
+        finite &= np.isfinite(np.asarray(source[:, start : start + block])).all(axis=1)
+    return finite
+
+
 def _rank_heads_by_correlation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     """
     Head indices by decreasing Pearson correlation with the target, in one pass.
@@ -442,7 +486,7 @@ def _rank_heads_by_correlation(source: np.ndarray, target: np.ndarray) -> np.nda
     # product per block and the variance follows from the block's own sums. Blocks keep the
     # accumulation in float64 without ever holding more than a slice of the matrix.
     correlation = np.empty(n_heads, dtype=np.float64)
-    block = 512
+    block = _head_block(n_rows, n_heads)
     with np.errstate(invalid="ignore", divide="ignore"):
         for start in range(0, n_heads, block):
             chunk = np.asarray(source[:, start : start + block], dtype=np.float64)
