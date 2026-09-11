@@ -938,6 +938,29 @@ class FlexCNNMultitaskModel(nn.Module):
         del x_atom_sum  # the fused trunk reads x_atom directly
         return self.head(self.encoder(x_atom, x_global, x_one_hot), task_idx)
 
+    def project(
+        self,
+        x_atom: torch.Tensor,
+        x_atom_sum: torch.Tensor,
+        x_global: torch.Tensor,
+        x_one_hot: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Map the trunk into the head's low-rank space, stopping before the per-setup step.
+
+        ``FactorHead`` finishes with ``projected @ embedding.T * scale + shift``, so this is
+        everything the setups share. Keeping it, rather than the ``(batch, n_tasks)`` matrix
+        it expands to, is what lets a whole run be held in ``(n_peptides, rank)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, rank)``.
+
+        """
+        del x_atom_sum  # the fused trunk reads x_atom directly
+        return self.head.proj(self.encoder(x_atom, x_global, x_one_hot))
+
     @property
     def padding_reach(self) -> int | None:
         """
