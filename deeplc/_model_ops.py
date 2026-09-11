@@ -252,9 +252,7 @@ def _output_hint(n_rows: int, columns: int, itemsize: int) -> str:
     )
 
 
-def _allocate_output(
-    n_rows: int, tail: tuple[int, ...], dtype: torch.dtype
-) -> torch.Tensor:
+def _allocate_output(n_rows: int, tail: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
     """
     Allocate the whole prediction output up front.
 
