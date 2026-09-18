@@ -30,7 +30,7 @@ If you use DeepLC, please cite:
 
 If you use the transfer learning functionality, please also cite:
 
-> **Retention time prediction improves proteomics database search and identification rates**  
+> **Transfer learning in DeepLC improves LC retention time prediction across substantially different modifications and setups**  
 > *Nature Communications* (2026) [doi:10.1038/s41467-026-68981-5](https://doi.org/10.1038/s41467-026-68981-5)
 
 To replicate the results from this paper, use DeepLC
