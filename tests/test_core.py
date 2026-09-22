@@ -123,3 +123,42 @@ def test_predict_and_calibrate_auto_selects_reference():
 
     assert isinstance(result, np.ndarray)
     assert result.shape == (n,)
+
+
+def test_predict_deduplicates_repeated_peptidoforms():
+    """A peptidoform repeated across PSMs gets one prediction, repeated in place."""
+    repeated = [p for p in _PEPTIDES for _ in range(3)]
+    predictions = deeplc.core.predict(_make_psm_list(repeated))
+
+    assert predictions.shape == (len(repeated),)
+    once = deeplc.core.predict(_make_psm_list(_PEPTIDES))
+    np.testing.assert_allclose(predictions, np.repeat(once, 3), rtol=0, atol=1e-4)
+
+
+def test_predict_is_unchanged_when_every_peptidoform_is_distinct():
+    """The deduplication must not disturb the ordinary path."""
+    psm_list = _make_psm_list(_PEPTIDES)
+    predictions = deeplc.core.predict(psm_list)
+
+    assert predictions.shape == (len(_PEPTIDES),)
+    assert len(set(np.round(predictions, 6))) > 1
+
+
+def test_predict_shares_a_prediction_across_charge_states():
+    """Charge reaches no feature the model reads, so charge states are one peptidoform."""
+    charges = ["AGFAGDDAPR", "AGFAGDDAPR/2", "AGFAGDDAPR/3", "AIQEYNQDK/2"]
+    predictions = deeplc.core.predict(_make_psm_list(charges))
+
+    assert predictions[0] == predictions[1] == predictions[2]
+    assert predictions[3] != predictions[0]
+
+
+def test_predict_matrix_keeps_the_callers_rows_when_deduplicating():
+    """``return_matrix`` still reports one row per PSM, in the caller's order."""
+    repeated = ["AGFAGDDAPR/2", "AIQEYNQDK/2", "AGFAGDDAPR/2", "AAYFGILEK/2", "AIQEYNQDK/2"]
+    matrix = np.asarray(deeplc.core.predict(_make_psm_list(repeated), return_matrix=True))
+
+    assert matrix.shape[0] == len(repeated)
+    np.testing.assert_array_equal(matrix[0], matrix[2])
+    np.testing.assert_array_equal(matrix[1], matrix[4])
+    assert not np.array_equal(matrix[0], matrix[1])
