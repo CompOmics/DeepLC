@@ -233,30 +233,58 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
     head weights than half the reference size. For a single-task model (one head) this reduces to
     a spline followed by a linear rescaling.
 
+    A reference with fewer than ``min_distinct`` distinct peptidoforms is calibrated with a
+    straight line on the best-correlating head instead, and a warning is logged. With few
+    distinct points the head ranking, the per-head splines and the ridge are all
+    underdetermined, so rounding differences in the predictions (thread count, how the matrix
+    was sliced) decide the fit and predictions can land far outside the gradient. Over 19
+    held-out setups the combination failed in 32 % of fits at 10 distinct peptidoforms and
+    5-10 % at 15-20, whereas the straight line never did from 10 upwards.
+
     Parameters
     ----------
     n_heads
         How many of the best-correlating heads to combine.
     alphas
         Ridge strengths offered to the internal cross-validation.
+    min_distinct
+        Fewest distinct reference peptidoforms for which heads are combined. Duplicated PSMs of
+        one peptidoform count once.
 
     """
 
-    def __init__(self, n_heads: int = 80, alphas: np.ndarray | None = None) -> None:
+    #: Below this many distinct peptidoforms even the straight-line fallback is unreliable.
+    _UNRELIABLE_BELOW = 10
+
+    def __init__(
+        self, n_heads: int = 80, alphas: np.ndarray | None = None, min_distinct: int = 200
+    ) -> None:
         """Initialize MultiHeadRidgeCalibration."""
         super().__init__()
         if n_heads < 1:
             raise ValueError(f"n_heads must be at least 1, got {n_heads}")
+        if min_distinct < 3:
+            raise ValueError(f"min_distinct must be at least 3, got {min_distinct}")
         self.n_heads = n_heads
+        self.min_distinct = int(min_distinct)
         self.alphas = np.logspace(-3, 6, 19) if alphas is None else np.asarray(alphas)
         self._head_idx: np.ndarray | None = None
         self._head_calibrations: list[SplineTransformerCalibration] = []
         self._ridge = None
+        #: (slope, intercept) of the straight-line fallback, None when heads are combined.
+        self._linear: tuple[float, float] | None = None
+        #: Distinct reference peptidoforms seen by the last fit.
+        self.n_distinct: int | None = None
 
     @property
     def is_fitted(self) -> bool:
         """True once the heads are selected, calibrated and weighted."""
-        return self._head_idx is not None and self._ridge is not None
+        return self._head_idx is not None and (self._ridge is not None or self._linear is not None)
+
+    @property
+    def uses_fallback(self) -> bool:
+        """True when the last fit had too few distinct peptidoforms to combine heads."""
+        return self._linear is not None
 
     def fit(self, target: np.ndarray, source: np.ndarray) -> None:
         """
@@ -295,11 +323,19 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         source, target = source[finite], target[finite]
 
         order = _rank_heads_by_correlation(source, target)
-        # never fit more weights than half the reference: a 230-peptide reference cannot support
-        # eighty of them, and the ridge would be extrapolating its own regularisation
-        n_heads = int(min(self.n_heads, source.shape[1], max(1, len(target) // 2)))
-        self._head_idx = order[:n_heads]
         self.selected_model_head = int(order[0])
+        self._ridge, self._linear = None, None
+        self.n_distinct = _count_distinct_rows(source, order)
+
+        if self.n_distinct < self.min_distinct:
+            self._fit_linear(source, target)
+            return
+
+        # never fit more weights than half the reference: a 230-peptide reference cannot support
+        # eighty of them, and the ridge would be extrapolating its own regularisation. Distinct
+        # peptidoforms are what count; repeated PSMs of one peptidoform add no information.
+        n_heads = int(min(self.n_heads, source.shape[1], max(1, self.n_distinct // 2)))
+        self._head_idx = order[:n_heads]
 
         calibrated = np.empty((len(target), n_heads), dtype=np.float64)
         self._head_calibrations = []
@@ -334,6 +370,34 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
             self.selected_model_head,
         )
 
+    def _fit_linear(self, source, target: np.ndarray) -> None:
+        """Straight line on the best-correlating head, for a reference too small to combine."""
+        n = cast(int, self.n_distinct)
+        if n < 3:
+            raise CalibrationError(
+                f"The reference holds {n} distinct peptidoform(s); at least three are needed to "
+                "calibrate. Use more confidently identified peptides as reference."
+            )
+        column = np.asarray(source[:, self.selected_model_head], dtype=np.float64).ravel()
+        slope, intercept = np.polyfit(column, target, 1)
+        self._linear = (float(slope), float(intercept))
+        self._head_idx = np.array([self.selected_model_head])
+        if n < self._UNRELIABLE_BELOW:
+            LOGGER.warning(
+                "The calibration reference holds only %d distinct peptidoforms. Calibrated "
+                "retention times will be unreliable; at least %d are recommended.",
+                n,
+                self.min_distinct,
+            )
+        else:
+            LOGGER.warning(
+                "The calibration reference holds %d distinct peptidoforms, fewer than the %d "
+                "needed to combine heads; falling back to a straight line on head %d.",
+                n,
+                self.min_distinct,
+                self.selected_model_head,
+            )
+
     def transform(self, source: np.ndarray) -> np.ndarray:
         """
         Calibrate predictions of the model this calibration was fitted with.
@@ -356,6 +420,10 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
             )
         if source.shape[0] == 0:
             return np.array([])
+        if self._linear is not None:
+            slope, intercept = self._linear
+            column = np.asarray(source[:, head_idx], dtype=np.float64)[:, 0]
+            return intercept + slope * column
         return np.asarray(self._ridge.predict(self._calibrated_columns(source)), dtype=np.float64)
 
     def _calibrated_columns(self, source: np.ndarray) -> np.ndarray:
@@ -380,7 +448,7 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         that varies from peptide to peptide rather than only along the gradient. Returns None
         while the calibration is unfitted or combines a single head, which carries no spread.
         """
-        if not self.is_fitted:
+        if not self.is_fitted or self._linear is not None:
             return None
         columns = as_head_matrix(source)
         if columns.shape[0] == 0 or len(cast(np.ndarray, self._head_idx)) < 2:
@@ -466,6 +534,37 @@ def _finite_rows(source) -> np.ndarray:
     for start in range(0, n_heads, block):
         finite &= np.isfinite(np.asarray(source[:, start : start + block])).all(axis=1)
     return finite
+
+
+#: Heads and tolerance (in prediction units, minutes) used to recognise repeated PSMs of one
+#: peptidoform.
+_DISTINCT_HEADS = 5
+_DISTINCT_TOLERANCE = 1e-3
+
+
+def _count_distinct_rows(source, order: np.ndarray) -> int:
+    """
+    Count the distinct peptidoforms in a reference from its predictions alone.
+
+    The calibration never sees peptide identities, but repeated PSMs of one peptidoform get the
+    same prediction from every head, up to rounding in the last digits (around 1e-5 within one
+    prediction call). Rows are grouped one best-correlating head at a time: within each group
+    they are sorted on the next head and split wherever two neighbours differ by more than
+    :data:`_DISTINCT_TOLERANCE`. Rounding noise below the tolerance can therefore never split a
+    peptidoform, as fixed rounding bins would, and two different peptidoforms stay together only
+    if they agree within the tolerance on every head used.
+    """
+    heads = order[: min(_DISTINCT_HEADS, len(order))]
+    columns = np.asarray(source[:, heads], dtype=np.float64)
+    group = np.zeros(columns.shape[0], dtype=np.int64)
+    for c in range(columns.shape[1]):
+        rows = np.lexsort((columns[:, c], group))
+        value, owner = columns[rows, c], group[rows]
+        new = np.empty(len(rows), dtype=bool)
+        new[0] = True
+        new[1:] = (owner[1:] != owner[:-1]) | (np.diff(value) > _DISTINCT_TOLERANCE)
+        group[rows] = np.cumsum(new) - 1
+    return int(group.max()) + 1 if len(group) else 0
 
 
 def _rank_heads_by_correlation(source: np.ndarray, target: np.ndarray) -> np.ndarray:

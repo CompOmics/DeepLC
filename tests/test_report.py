@@ -311,7 +311,7 @@ def test_report_widths_vary_per_peptide_with_a_multihead_calibration():
         prediction_report(
             queries,
             psm_list_reference=_reference(),
-            calibration=MultiHeadRidgeCalibration(n_heads=8),
+            calibration=MultiHeadRidgeCalibration(n_heads=8, min_distinct=3),
             per_peptide_width=flag,
             predict_kwargs={"device": "cpu"},
         )
@@ -347,7 +347,7 @@ def test_report_with_multihead_calibration_lists_every_selected_head(tiny_index:
     report = prediction_report(
         PSMList(psm_list=[PSM(spectrum_id="q", peptidoform="AGFAGDDAPR/2")]),
         psm_list_reference=_reference(),
-        calibration=MultiHeadRidgeCalibration(n_heads=4),
+        calibration=MultiHeadRidgeCalibration(n_heads=4, min_distinct=3),
         training_index=tiny_index,
         predict_kwargs={"device": "cpu"},
     )

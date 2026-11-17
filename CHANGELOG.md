@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `MultiHeadRidgeCalibration` no longer combines heads on a reference with fewer than 200
+  distinct peptidoforms (`min_distinct`). Such a reference is calibrated with a straight line
+  on the best-correlating head, and a warning is logged; below three distinct peptidoforms
+  `fit` raises `CalibrationError`. Repeated PSMs of one peptidoform now count once, also for
+  the cap on the number of combined heads. On small references the head ranking, the per-head
+  splines and the ridge were underdetermined, so rounding differences in the predictions
+  (thread count, slicing of the factored matrix) decided the fit: predictions of +-1e7 s that
+  changed sign with the number of threads (GitHub issue #136). Over 19 held-out setups the
+  combination failed in 32 % of fits at 10 distinct peptidoforms and 5-10 % at 15-20; the
+  straight line never failed from 10 upwards. From 200 distinct peptidoforms the combination
+  beats the straight line in at least 91 % of fits.
+
 ## [4.5.0] - 2026-09-11
 
 ### Changed

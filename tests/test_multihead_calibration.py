@@ -73,7 +73,7 @@ def test_beats_a_single_head_when_the_target_mixes_two():
     target, source = _synthetic()
     train, test = slice(0, 150), slice(150, None)
 
-    multi = MultiHeadRidgeCalibration(n_heads=5)
+    multi = MultiHeadRidgeCalibration(n_heads=5, min_distinct=3)
     multi.fit(target=target[train], source=source[train])
     multi_mae = float(np.mean(np.abs(multi.transform(source[test]) - target[test])))
 
@@ -450,15 +450,18 @@ def test_column_source_serves_the_disagreement_too():
     )
 
 
-@pytest.mark.parametrize("wrap", [
-    pytest.param(lambda column: column[:, None], id="2-D array"),
-    pytest.param(lambda column: column, id="1-D array"),
-    pytest.param(lambda column: [float(v) for v in column], id="list"),
-    pytest.param(lambda column: tuple(float(v) for v in column), id="tuple"),
-    pytest.param(lambda column: column.astype(int), id="int array"),
-    pytest.param(lambda column: pd.Series(column), id="pandas Series"),
-    pytest.param(lambda column: pd.DataFrame({"head": column}), id="pandas DataFrame"),
-])
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        pytest.param(lambda column: column[:, None], id="2-D array"),
+        pytest.param(lambda column: column, id="1-D array"),
+        pytest.param(lambda column: [float(v) for v in column], id="list"),
+        pytest.param(lambda column: tuple(float(v) for v in column), id="tuple"),
+        pytest.param(lambda column: column.astype(int), id="int array"),
+        pytest.param(lambda column: pd.Series(column), id="pandas Series"),
+        pytest.param(lambda column: pd.DataFrame({"head": column}), id="pandas DataFrame"),
+    ],
+)
 def test_transform_takes_whatever_numpy_takes(wrap):
     """
     Every array-like a caller could hand to transform keeps working.
@@ -477,3 +480,63 @@ def test_transform_takes_whatever_numpy_takes(wrap):
     out = calibration.transform(wrap(column))
     assert np.shape(out) == (10,)
     assert np.isfinite(out).all()
+
+
+# --- too few distinct reference peptidoforms (GitHub issue #136) --------------------------------
+
+
+def _duplicated_reference(n_distinct: int, copies: int, n_heads: int = 40, seed: int = 0):
+    """`n_distinct` peptidoforms, each repeated `copies` times with its own observed RT scatter."""
+    rng = np.random.default_rng(seed)
+    latent = np.linspace(10, 90, n_distinct)
+    rows = rng.normal(size=(n_distinct, n_heads)) * 2 + latent[:, None]
+    source = np.repeat(rows, copies, axis=0)
+    target = np.repeat(latent, copies) + rng.normal(0, 0.5, n_distinct * copies)
+    return target, source
+
+
+def test_repeated_psms_count_once_and_trigger_the_straight_line():
+    """Many PSMs of a few peptidoforms are a few reference points, not many."""
+    target, source = _duplicated_reference(n_distinct=15, copies=75)  # 1,125 rows, 15 distinct
+    calibration = MultiHeadRidgeCalibration()
+    calibration.fit(target=target, source=source)
+    assert calibration.n_distinct == 15
+    assert calibration.uses_fallback
+    assert calibration.disagreement(source) is None
+    np.testing.assert_allclose(calibration.transform(source), target, atol=10)
+
+
+def test_fallback_is_insensitive_to_rounding_noise():
+    """Thread-sized noise in the predictions must not move a small-reference calibration."""
+    target, source = _duplicated_reference(n_distinct=12, copies=50)
+    rng = np.random.default_rng(1)
+    noisy = source + rng.uniform(-1e-4, 1e-4, source.shape)
+    clean_fit, noisy_fit = MultiHeadRidgeCalibration(), MultiHeadRidgeCalibration()
+    clean_fit.fit(target=target, source=source)
+    noisy_fit.fit(target=target, source=noisy)
+    assert clean_fit.n_distinct == noisy_fit.n_distinct == 12
+    test = np.linspace(-20, 120, 50)[:, None] + np.zeros((1, source.shape[1]))
+    assert np.max(np.abs(clean_fit.transform(test) - noisy_fit.transform(test))) < 1.0
+
+
+def test_large_distinct_reference_combines_heads():
+    """A reference with enough distinct peptidoforms keeps the head combination."""
+    target, source = _synthetic(n=400)
+    calibration = MultiHeadRidgeCalibration(n_heads=5)
+    calibration.fit(target=target, source=source)
+    assert calibration.n_distinct == 400
+    assert not calibration.uses_fallback
+    assert len(calibration._head_idx) == 5
+
+
+def test_fewer_than_three_distinct_peptidoforms_is_refused():
+    """Two peptidoforms cannot calibrate anything, however many PSMs they have."""
+    target, source = _duplicated_reference(n_distinct=2, copies=80)
+    with pytest.raises(CalibrationError, match="distinct peptidoform"):
+        MultiHeadRidgeCalibration().fit(target=target, source=source)
+
+
+def test_rejects_a_nonsensical_min_distinct():
+    """A threshold below three would let the fallback fit an undetermined line."""
+    with pytest.raises(ValueError):
+        MultiHeadRidgeCalibration(min_distinct=2)
