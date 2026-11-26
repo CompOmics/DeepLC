@@ -3,9 +3,15 @@
 import copy
 import inspect
 import logging
-from collections.abc import Callable, Iterator, Sequence
+from collections import deque
+from collections.abc import Callable, Generator, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from functools import partial
+from itertools import islice
 from os import PathLike
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 import torch
@@ -24,6 +30,11 @@ from deeplc._factored import FactoredPredictionMatrix
 from deeplc.data import DeepLCDataset
 
 logger = logging.getLogger(__name__)
+# The intra-op thread setting is shared. Overlapping calls through this path
+# must finish their workers before another call changes it.
+_CPU_PREDICTION_LOCK = Lock()
+# Small fixed batches improve load balance and limit intermediate tensors per worker.
+_CPU_BATCH_SIZE = 64
 
 
 def load_model(
@@ -307,6 +318,12 @@ def predict(
     64 and 6,543 setups is 102 times less memory. Ignored when the model cannot be factored
     or when ``task_idx`` already narrows the output.
 
+    On CPU, built-in models with the standard dataset and no data loading workers
+    use ``num_threads`` to run independent batches concurrently. Each batch uses one
+    Torch thread so that changing the worker count leaves its arithmetic unchanged.
+    Batches on this path contain at most 64 peptides and retain the original
+    padding windows.
+
     ``length_buckets`` runs length-sorted chunks in a window that fits them rather than
     padding every peptide to the model's full window; see :func:`_length_buckets`. It is
     exact for models that report a ``padding_reach`` and ignored for those that do not.
@@ -317,46 +334,77 @@ def predict(
     # 6,543 setups and a million peptides that output alone is tens of gigabytes,
     # so a caller wanting one column should ask for one column. Models whose
     # forward does not accept it ignore the argument.
-    torch.set_num_threads(num_threads or torch.get_num_threads())
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(model, device)
-
     as_factors = factored and task_idx is None and supports_factored(model)
-
+    parallel_batches = (
+        torch.device(device).type == "cpu"
+        and type(model) in (DeepLCModel, FlexCNNMultitaskModel)
+        and type(data) is DeepLCDataset
+        and num_workers == 0
+    )
+    # Pick the padding windows before subdividing work for CPU workers. A
+    # different window can change floating-point results even for the same peptide.
     buckets = _length_buckets(model, data, batch_size) if length_buckets else None
-    if buckets is None:
-        predictions = _predict_epoch(
-            model,
-            data,
-            device,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            task_idx=task_idx,
-            project=as_factors,
-        )
-        result = predictions.cpu().detach()
-        return _as_factored(model, result) if as_factors else result
+    if parallel_batches:
+        batch_size = min(batch_size, _CPU_BATCH_SIZE)
 
-    out: torch.Tensor | None = None
-    for indices, subset in buckets:
-        part = _predict_epoch(
-            model,
-            subset,
-            device,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            task_idx=task_idx,
-            project=as_factors,
-        ).cpu()
-        if out is None:
-            out = _allocate_output(len(data), tuple(part.shape[1:]), part.dtype)
-        out[indices] = part
-    if out is None:
-        raise ValueError("Dataset is empty — nothing to predict.")
-    out = out.detach()
-    return _as_factored(model, out) if as_factors else out
+    run = partial(
+        _predict_epoch,
+        model,
+        data,
+        device,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        show_progress=show_progress,
+        task_idx=task_idx,
+        project=as_factors,
+        buckets=buckets,
+    )
+    # Built-in CPU models are read-only in eval mode. Keep the arithmetic
+    # inside a batch fixed while scheduling independent batches in parallel.
+    if parallel_batches:
+        with _CPU_PREDICTION_LOCK:
+            prior_threads = torch.get_num_threads()
+            workers = num_threads or prior_threads
+            if workers < 1:
+                raise RuntimeError("set_num_threads expects a positive integer")
+            torch.set_num_threads(1)
+            try:
+                result = run(cpu_workers=workers)
+            finally:
+                torch.set_num_threads(prior_threads)
+    else:
+        torch.set_num_threads(num_threads or torch.get_num_threads())
+        result = run()
+
+    result = result.detach()
+    return _as_factored(model, result) if as_factors else result
+
+
+def _ordered_cpu_batches(
+    batches: Iterator[tuple[torch.Tensor | None, list[torch.Tensor]]],
+    forward: Callable[[list[torch.Tensor]], torch.Tensor],
+    threads: int,
+) -> Generator[tuple[torch.Tensor | None, torch.Tensor], None, None]:
+    """Yield ordered results with bounded lookahead for the worker pool."""
+    if threads <= 1:
+        for rows, features in batches:
+            yield rows, forward(features)
+        return
+
+    with ThreadPoolExecutor(max_workers=threads, initializer=torch.init_num_threads) as pool:
+        # A queued batch can keep a worker busy while the caller waits for an
+        # earlier result. Keep the input and output buffers bounded.
+        pending = deque(
+            (rows, pool.submit(forward, features))
+            for rows, features in islice(batches, 2 * threads)
+        )
+        while pending:
+            rows, future = pending.popleft()
+            yield rows, future.result()
+            for rows, features in islice(batches, 1):
+                pending.append((rows, pool.submit(forward, features)))
 
 
 def _as_factored(model: torch.nn.Module, projections: torch.Tensor) -> FactoredPredictionMatrix:
@@ -544,40 +592,71 @@ def _predict_epoch(
     show_progress: bool = False,
     task_idx: Sequence[int] | None = None,
     project: bool = False,
+    buckets: list[tuple[torch.Tensor, Dataset]] | None = None,
+    cpu_workers: int = 1,
 ) -> torch.Tensor:
     """Predict using the model for one epoch, or project into the head's rank if asked."""
     model.eval()
     selected = None
     if task_idx is not None and supports_task_subset(model):
         selected = torch.as_tensor(list(task_idx), dtype=torch.long, device=device)
+
     sized = hasattr(data, "__len__")
-    total = int(np.ceil(len(data) / batch_size)) if sized else None
+    batches: Iterator[tuple[torch.Tensor | None, list[torch.Tensor]]]
+    if buckets is None:
+        features = _feature_batches(data, batch_size, num_workers)
+        batches = ((None, batch) for batch in features)
+        total = int(np.ceil(len(data) / batch_size)) if sized else None
+    else:
+        batches = (
+            (indices, features)
+            for rows, subset in buckets
+            for indices, features in zip(
+                rows.split(batch_size),
+                _feature_batches(subset, batch_size, num_workers),
+                strict=True,
+            )
+        )
+        total = sum((len(rows) + batch_size - 1) // batch_size for rows, _ in buckets)
+
+    @torch.no_grad()
+    def forward(features: list[torch.Tensor]) -> torch.Tensor:
+        features = [tensor.to(device) for tensor in features]
+        if project:
+            outputs = model.project(*features)
+        else:
+            outputs = model(*features) if selected is None else model(*features, task_idx=selected)
+        return outputs.cpu()
+
+    # Autocast is thread-local. Replicate the caller's CPU autocast settings inside the pool.
+    run_batch = forward
+    if cpu_workers > 1 and torch.is_autocast_enabled("cpu"):
+        dtype = torch.get_autocast_dtype("cpu")
+        cache_enabled = torch.is_autocast_cache_enabled()
+
+        def autocast_forward(features: list[torch.Tensor]) -> torch.Tensor:
+            with torch.autocast("cpu", dtype=dtype, cache_enabled=cache_enabled):
+                return forward(features)
+
+        run_batch = autocast_forward
+
     out: torch.Tensor | None = None
     parts: list[torch.Tensor] = []
     filled = 0
-    with torch.no_grad():
-        for features in track(
-            _feature_batches(data, batch_size, num_workers),
+    workers = min(cpu_workers, total) if total is not None else cpu_workers
+    with torch.no_grad(), closing(_ordered_cpu_batches(batches, run_batch, workers)) as results:
+        for rows, batch in track(
+            results,
             description="Predicting...",
             transient=True,
             disable=not show_progress,
             total=total,
         ):
-            features = [feature_tensor.to(device) for feature_tensor in features]
-            if project:
-                outputs = model.project(*features)
-            else:
-                outputs = (
-                    model(*features) if selected is None else model(*features, task_idx=selected)
-                )
-            batch = outputs.cpu()
-            # The column count is only known once a batch has been through the model, so the
-            # output is allocated on the first one and filled from there. A dataset that
-            # cannot report its length falls back to collecting the batches.
             if sized:
                 if out is None:
                     out = _allocate_output(len(data), tuple(batch.shape[1:]), batch.dtype)
-                out[filled : filled + len(batch)] = batch
+                destination = slice(filled, filled + len(batch)) if rows is None else rows
+                out[destination] = batch
             else:
                 parts.append(batch)
             filled += len(batch)

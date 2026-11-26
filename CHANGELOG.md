@@ -10,6 +10,13 @@ and this project adheres to
 
 ### Fixed
 
+- For built-in CPU inference with the default data loading path, `num_threads` runs
+  independent batches of up to 64 peptides in parallel. Each batch uses one Torch
+  thread and uses its original padding window, keeping predictions independent
+  of scheduling.
+- The straight-line calibration fallback floors extrapolated retention times at
+  zero when all observed reference times are nonnegative.
+
 - `MultiHeadRidgeCalibration` no longer combines heads on a reference with fewer than 200
   distinct peptidoforms (`min_distinct`). Such a reference is calibrated with a straight line
   on the best-correlating head, and a warning is logged; below three distinct peptidoforms

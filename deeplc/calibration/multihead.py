@@ -234,7 +234,8 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
     a spline followed by a linear rescaling.
 
     A reference with fewer than ``min_distinct`` distinct peptidoforms is calibrated with a
-    straight line on the best-correlating head instead, and a warning is logged. With few
+    straight line on the best-correlating head instead, and a warning is logged. If every
+    reference retention time is nonnegative, the fallback is floored at zero. With few
     distinct points the head ranking, the per-head splines and the ridge are all
     underdetermined, so rounding differences in the predictions (thread count, how the matrix
     was sliced) decide the fit and predictions can land far outside the gradient. Over 19
@@ -273,6 +274,7 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         self._ridge = None
         #: (slope, intercept) of the straight-line fallback, None when heads are combined.
         self._linear: tuple[float, float] | None = None
+        self._linear_floor = -np.inf
         #: Distinct reference peptidoforms seen by the last fit.
         self.n_distinct: int | None = None
 
@@ -381,6 +383,7 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         column = np.asarray(source[:, self.selected_model_head], dtype=np.float64).ravel()
         slope, intercept = np.polyfit(column, target, 1)
         self._linear = (float(slope), float(intercept))
+        self._linear_floor = 0.0 if np.all(target >= 0.0) else -np.inf
         self._head_idx = np.array([self.selected_model_head])
         if n < self._UNRELIABLE_BELOW:
             LOGGER.warning(
@@ -423,7 +426,8 @@ class MultiHeadRidgeCalibration(MultiHeadCalibration):
         if self._linear is not None:
             slope, intercept = self._linear
             column = np.asarray(source[:, head_idx], dtype=np.float64)[:, 0]
-            return intercept + slope * column
+            # Old fitted instances may have no floor.
+            return np.maximum(intercept + slope * column, getattr(self, "_linear_floor", -np.inf))
         return np.asarray(self._ridge.predict(self._calibrated_columns(source)), dtype=np.float64)
 
     def _calibrated_columns(self, source: np.ndarray) -> np.ndarray:
