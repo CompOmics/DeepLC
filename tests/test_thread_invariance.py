@@ -98,3 +98,24 @@ def test_cpu_batch_cap_preserves_padding_windows(monkeypatch):
 
     original_window = max(map(len, peptides)) + model.padding_reach
     assert batch_shapes == [(2, original_window), (2, original_window)]
+
+
+def test_predict_outside_the_parallel_path_restores_intraop_threads(monkeypatch):
+    """Models that skip the parallel CPU path also leave the caller's Torch setting intact."""
+
+    class CustomModel(FlexCNNMultitaskModel):
+        pass
+
+    model = CustomModel(n_tasks=1)
+    monkeypatch.setattr(model, "forward", lambda atoms, *_: torch.zeros(len(atoms), 1))
+    dataset = DeepLCDataset(["PEPTIDEK", "ACDK"])
+    prior_threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(2)
+        _model_ops.predict(model, dataset, device="cpu", num_threads=3, show_progress=False)
+        assert torch.get_num_threads() == 2
+        with pytest.raises(ValueError, match="num_threads"):
+            _model_ops.predict(model, dataset, device="cpu", num_threads=-1, show_progress=False)
+        assert torch.get_num_threads() == 2
+    finally:
+        torch.set_num_threads(prior_threads)

@@ -79,6 +79,8 @@ def predict(
     predict_kwargs
         Additional keyword arguments to pass to the prediction function. Pass
         ``{"factored": False}`` to force a dense ``ndarray`` from ``return_matrix=True``.
+        On CPU, a ``batch_size`` above 64 is lowered to 64 so that predictions do not
+        depend on ``num_threads``.
         The default hands back a
         :class:`~deeplc._factored.FactoredPredictionMatrix`, which holds the head's low-rank
         factors and indexes identically at a fraction of the memory.

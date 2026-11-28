@@ -321,8 +321,9 @@ def predict(
     On CPU, built-in models with the standard dataset and no data loading workers
     use ``num_threads`` to run independent batches concurrently. Each batch uses one
     Torch thread so that changing the worker count leaves its arithmetic unchanged.
-    Batches on this path contain at most 64 peptides and retain the original
-    padding windows.
+    On this path a ``batch_size`` above 64 is lowered to 64, and batches retain the
+    padding windows chosen at the full ``batch_size``. On every path the caller's Torch
+    thread setting is restored on return.
 
     ``length_buckets`` runs length-sorted chunks in a window that fits them rather than
     padding every peptide to the model's full window; see :func:`_length_buckets`. It is
@@ -361,22 +362,18 @@ def predict(
         project=as_factors,
         buckets=buckets,
     )
+    workers = num_threads or torch.get_num_threads()
+    if workers < 1:
+        raise ValueError(f"num_threads must be a positive integer, got {num_threads}.")
     # Built-in CPU models are read-only in eval mode. Keep the arithmetic
     # inside a batch fixed while scheduling independent batches in parallel.
-    if parallel_batches:
-        with _CPU_PREDICTION_LOCK:
-            prior_threads = torch.get_num_threads()
-            workers = num_threads or prior_threads
-            if workers < 1:
-                raise RuntimeError("set_num_threads expects a positive integer")
-            torch.set_num_threads(1)
-            try:
-                result = run(cpu_workers=workers)
-            finally:
-                torch.set_num_threads(prior_threads)
-    else:
-        torch.set_num_threads(num_threads or torch.get_num_threads())
-        result = run()
+    with _CPU_PREDICTION_LOCK:
+        prior_threads = torch.get_num_threads()
+        torch.set_num_threads(1 if parallel_batches else workers)
+        try:
+            result = run(cpu_workers=workers) if parallel_batches else run()
+        finally:
+            torch.set_num_threads(prior_threads)
 
     result = result.detach()
     return _as_factored(model, result) if as_factors else result
